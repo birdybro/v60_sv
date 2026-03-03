@@ -29,11 +29,16 @@ Reference documentation: `docs/NEC_V60_Programmers_Reference_Manual.pdf`
   - `sim_main.cpp` — Verilator C++ driver with CSV trace and VCD output
   - `trace_compare.py` — Python script to diff MAME vs RTL traces
   - `Makefile` — Verilator build
-- **mame/** — MAME reference harness
-  - `src/mame_stubs.h` — Minimal stubs replacing MAME device framework
-  - `src/v60_harness.cpp` — Standalone harness with trace output
+- **mame/** — MAME reference harness (compiles real MAME V60 source unmodified)
+  - `src/emu.h` — MAME framework stubs (address_space, cpu_device, device types, etc.)
+  - `src/v60_harness.cpp` — Thin wrapper around real v60_device
+  - `src/v60.cpp`, `src/v60.h` — Real MAME V60 CPU source (unmodified)
+  - `src/am*.hxx`, `src/op*.hxx`, `src/optable.hxx` — MAME addressing modes & opcodes (unmodified)
+  - `src/v60d.cpp`, `src/v60d.h` — MAME disassembler (not compiled, stubs in harness)
   - `Makefile` — Harness build
-- **tests/** — Binary test programs (future)
+- **tests/** — Binary test programs and assembler
+  - `asm_v60.py` — V60 assembler/test generator
+  - `phase*_test.bin` — Phase-specific test binaries
 - **docs/** — Reference documentation (NEC V60 Programmer's Reference Manual)
 
 ## Build Commands
@@ -91,14 +96,14 @@ EXECUTE → MEM_WRITE → MEM_WRITE_WAIT → WRITEBACK (MOV to memory, write-onl
 ### Key V60 ISA Facts
 - NOP = 0xCD, HALT = 0x00 (Format V, 1 byte)
 - Bcc short = 0x60-0x6F (8-bit signed displacement), long = 0x70-0x7F (16-bit)
-- BR = cond 0xA (always), BSR = cond 0xB
-- PSW: bit0=Z, bit1=S, bit2=OV, bit3=CY, bit18=ID, bit19=IS, bits24-25=EL
+- BR = cond 0xA (always); cond 0xB (opcode 0x6B/0x7B) is unhandled in MAME
+- PSW: bit0=Z, bit1=S, bit2=OV, bit3=CY, bit18=ID, bits24-25=EL, bit28=IS
 - Reset vector at physical address 0xFFFFFFF0
 - R31=SP (cached: L0SP-L3SP + ISP selected by EL/IS), R30=FP, R29=AP
 - Little-endian byte ordering
 
 ### Bus Arbitration
-Data bus requests from the control FSM have priority over instruction fetch. A registered `data_bus_owns` flag tracks ownership through multi-cycle bus transactions to ensure responses are routed correctly.
+Data bus requests from the control FSM have priority over instruction fetch. A registered `response_to_data` flag latches ownership at request submission time and routes bus responses correctly even when a data request arrives while a fetch is in-flight.
 
 ### DPI Interface
 DPI-exported functions (`get_pc`, `get_psw`, `get_gpr`, `mem_write_byte`, etc.) require `svSetScope()` before calling from C++. Scopes are obtained via `svGetScopeFromName("TOP.tb_v60_top")` and `svGetScopeFromName("TOP.tb_v60_top.u_mem")`.

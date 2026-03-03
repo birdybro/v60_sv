@@ -637,18 +637,17 @@ def build_phase4_test():
     a.inc_reg('w', 11)
     a.inc_reg('w', 10)          # R10=14
 
-    # === Group 5: BR (always) and NOP (never) ===
+    # === Group 5: BR (always) ===
 
     # Test 15: BR (always → taken)
     a.bcc_short(a.BR, 4)
     a.inc_reg('w', 11)
     a.inc_reg('w', 10)          # R10=15
 
-    # Test 16: BNOP (never → NOT taken, falls through to INC R10)
-    a.bcc_short(a.BNOP, 4)
-    a.inc_reg('w', 10)          # R10=16 (success: branch was not taken)
+    # Note: BNOP (condition 0xB / opcode 0x6B) is not a valid V60 opcode.
+    # Real MAME marks it as opUNHANDLED. Removed from test.
 
-    # Final: capture R10 (should be 16) into R12 for easy trace inspection
+    # Final: capture R10 (should be 15) into R12 for easy trace inspection
     a.mov_reg_reg('w', 10, 12)
     a.getpsw(13)
 
@@ -657,9 +656,9 @@ def build_phase4_test():
 
     a.write('tests/phase4_test.bin')
 
-    print("\nPhase 4 test: 14 Bcc conditions + BR + NOP")
+    print("\nPhase 4 test: 14 Bcc conditions + BR")
     print(f"  Binary size: {len(a.code)} bytes")
-    print(f"  Expected R10 = 16 (all tests passed)")
+    print(f"  Expected R10 = 15 (all tests passed)")
     print(f"  Expected R11 = 0 (no failures)")
 
 

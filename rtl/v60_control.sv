@@ -349,7 +349,6 @@ module v60_control
                     fetch_flush_addr = data_bus_rdata;
                     psw_wr_en   = 1'b1;
                     psw_wr_data = 32'h0;
-                    psw_wr_data[PSW_ID] = 1'b1;
                     psw_wr_data[PSW_IS] = 1'b1;
                 end
             end

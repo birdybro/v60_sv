@@ -34,10 +34,9 @@ package v60_pkg;
     localparam int PSW_NP  = 16;  // Nested exception/trap pending
     localparam int PSW_TE  = 17;  // Trace enable
     localparam int PSW_ID  = 18;  // Interrupt disable
-    localparam int PSW_IS  = 19;  // Interrupt stack select
     localparam int PSW_EL0 = 24;  // Execution level bit 0
     localparam int PSW_EL1 = 25;  // Execution level bit 1
-    localparam int PSW_DB  = 28;  // Debug mode
+    localparam int PSW_IS  = 28;  // Interrupt stack select
 
     // =========================================================================
     // Execution levels
