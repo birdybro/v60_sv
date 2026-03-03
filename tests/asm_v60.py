@@ -45,6 +45,30 @@ class V60Asm:
         """Encode mod byte for full immediate (m=0, mod=0xF4)."""
         return 0xF4
 
+    def _encode_mod_reg_indirect(self, reg):
+        """Encode mod for [Rn] (m=0, hi=3): mod = 0x60|reg."""
+        return 0x60 | (reg & 0x1F)
+
+    def _encode_mod_autoinc(self, reg):
+        """Encode mod for [Rn]+ (m=1, hi=4): mod = 0x80|reg."""
+        return 0x80 | (reg & 0x1F)
+
+    def _encode_mod_autodec(self, reg):
+        """Encode mod for -[Rn] (m=1, hi=5): mod = 0xA0|reg."""
+        return 0xA0 | (reg & 0x1F)
+
+    def _encode_mod_disp8(self, reg):
+        """Encode mod for Disp8[Rn] (m=0, hi=0): mod = 0x00|reg."""
+        return 0x00 | (reg & 0x1F)
+
+    def _encode_mod_disp16(self, reg):
+        """Encode mod for Disp16[Rn] (m=0, hi=1): mod = 0x20|reg."""
+        return 0x20 | (reg & 0x1F)
+
+    def _encode_mod_disp32(self, reg):
+        """Encode mod for Disp32[Rn] (m=0, hi=2): mod = 0x40|reg."""
+        return 0x40 | (reg & 0x1F)
+
     def _size_byte_count(self, size):
         """Return byte count for a data size ('b'=1, 'h'=2, 'w'=4)."""
         return {'b': 1, 'h': 2, 'w': 4}[size]
@@ -79,6 +103,116 @@ class V60Asm:
         self.code.extend([opcode, byte1, mod])
 
     # =========================================================================
+    # Format I: Register to memory (d=0: reg=source, mod=destination)
+    # =========================================================================
+    def _fmt1_reg_mem_rind(self, mnemonic, size, src_reg, addr_reg):
+        """Rsrc, [Raddr] — register indirect destination (m=0, hi=3)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (0 << 5) | (src_reg & 0x1F)  # m=0, d=0
+        mod = self._encode_mod_reg_indirect(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+
+    def _fmt1_reg_mem_disp8(self, mnemonic, size, src_reg, addr_reg, disp):
+        """Rsrc, disp8[Raddr]."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (0 << 5) | (src_reg & 0x1F)  # m=0, d=0
+        mod = self._encode_mod_disp8(addr_reg)
+        self.code.extend([opcode, byte1, mod, disp & 0xFF])
+
+    def _fmt1_reg_mem_disp16(self, mnemonic, size, src_reg, addr_reg, disp):
+        """Rsrc, disp16[Raddr]."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (0 << 5) | (src_reg & 0x1F)
+        mod = self._encode_mod_disp16(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+        self.code.extend((disp & 0xFFFF).to_bytes(2, 'little'))
+
+    def _fmt1_reg_mem_autodec(self, mnemonic, size, src_reg, addr_reg):
+        """Rsrc, -[Raddr] — autodecrement destination (m=1, hi=5)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (1 << 6) | (0 << 5) | (src_reg & 0x1F)  # m=1, d=0
+        mod = self._encode_mod_autodec(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+
+    # =========================================================================
+    # Format I: Memory to register (d=1: reg=destination, mod=source)
+    # =========================================================================
+    def _fmt1_mem_rind_reg(self, mnemonic, size, addr_reg, dst_reg):
+        """[Raddr], Rdst — register indirect source (m=0, hi=3)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)  # m=0, d=1
+        mod = self._encode_mod_reg_indirect(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+
+    def _fmt1_mem_disp8_reg(self, mnemonic, size, addr_reg, disp, dst_reg):
+        """disp8[Raddr], Rdst."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)  # m=0, d=1
+        mod = self._encode_mod_disp8(addr_reg)
+        self.code.extend([opcode, byte1, mod, disp & 0xFF])
+
+    def _fmt1_mem_disp16_reg(self, mnemonic, size, addr_reg, disp, dst_reg):
+        """disp16[Raddr], Rdst."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_disp16(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+        self.code.extend((disp & 0xFFFF).to_bytes(2, 'little'))
+
+    def _fmt1_mem_autoinc_reg(self, mnemonic, size, addr_reg, dst_reg):
+        """[Raddr]+, Rdst — autoincrement source (m=1, hi=4)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (1 << 6) | (1 << 5) | (dst_reg & 0x1F)  # m=1, d=1
+        mod = self._encode_mod_autoinc(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+
+    # =========================================================================
+    # Format I: Immediate to memory
+    # =========================================================================
+    def _fmt1_imm_mem_rind(self, mnemonic, size, imm_val, addr_reg):
+        """#imm, [Raddr] — immediate to memory via register indirect.
+        For CMP: d=0 would mean reg=src, but we want imm=src.
+        Actually, for imm source + mem dest, we need d=0 (mod=dest), but
+        source is immediate which means... V60 can't do imm→mem in one instruction
+        for most ALU ops. CMP #imm, [Rn] uses d=1 with mod as source.
+        Wait: CMP #imm, [Rn]: we need the mod field to be [Rn] as destination
+        but CMP doesn't write. The encoding is:
+        d=0: reg=source, mod=dest. But source needs to be immediate.
+        For Format I, the reg field is always a register. To use imm source
+        we need to go through a different path.
+        Actually, CMP #imm, Rdst uses d=1 (reg=dest), m=0 (mod=immediate source).
+        For CMP [Rn], Rdst: d=1, m=0, mod=[Rn]. That gives mem source.
+        For CMP #imm, [Rn]: this isn't directly encodable in Format I since
+        we can't have both imm and mem. We need to use a register intermediary.
+
+        Let's skip this and use register-based CMP instead."""
+        pass  # Not directly encodable
+
+    # =========================================================================
+    # Format III: Memory modes for INC/DEC
+    # =========================================================================
+    def inc_mem_rind(self, size, addr_reg):
+        """INC.size [Raddr] — Format III with register indirect (m=0)."""
+        base = {'b': 0xD8, 'h': 0xDA, 'w': 0xDC}[size]
+        opcode = base | 0  # m=0 for register indirect
+        mod = self._encode_mod_reg_indirect(addr_reg)
+        self.code.extend([opcode, mod])
+
+    def dec_mem_rind(self, size, addr_reg):
+        """DEC.size [Raddr] — Format III with register indirect (m=0)."""
+        base = {'b': 0xD0, 'h': 0xD2, 'w': 0xD4}[size]
+        opcode = base | 0  # m=0
+        mod = self._encode_mod_reg_indirect(addr_reg)
+        self.code.extend([opcode, mod])
+
+    def inc_mem_disp8(self, size, addr_reg, disp):
+        """INC.size disp8[Raddr] — Format III with Disp8."""
+        base = {'b': 0xD8, 'h': 0xDA, 'w': 0xDC}[size]
+        opcode = base | 0  # m=0
+        mod = self._encode_mod_disp8(addr_reg)
+        self.code.extend([opcode, mod, disp & 0xFF])
+
+    # =========================================================================
     # MOV convenience methods (preserved from Phase 2)
     # =========================================================================
     def mov_reg_reg(self, size, src_reg, dst_reg):
@@ -90,6 +224,25 @@ class V60Asm:
     def mov_immq_reg(self, size, quick_val, dst_reg):
         self._fmt1_immq_reg('mov', size, quick_val, dst_reg)
 
+    # MOV memory modes
+    def mov_reg_mem_rind(self, size, src_reg, addr_reg):
+        self._fmt1_reg_mem_rind('mov', size, src_reg, addr_reg)
+
+    def mov_mem_rind_reg(self, size, addr_reg, dst_reg):
+        self._fmt1_mem_rind_reg('mov', size, addr_reg, dst_reg)
+
+    def mov_reg_mem_disp8(self, size, src_reg, addr_reg, disp):
+        self._fmt1_reg_mem_disp8('mov', size, src_reg, addr_reg, disp)
+
+    def mov_mem_disp8_reg(self, size, addr_reg, disp, dst_reg):
+        self._fmt1_mem_disp8_reg('mov', size, addr_reg, disp, dst_reg)
+
+    def mov_mem_autoinc_reg(self, size, addr_reg, dst_reg):
+        self._fmt1_mem_autoinc_reg('mov', size, addr_reg, dst_reg)
+
+    def mov_reg_mem_autodec(self, size, src_reg, addr_reg):
+        self._fmt1_reg_mem_autodec('mov', size, src_reg, addr_reg)
+
     # =========================================================================
     # ALU Format I convenience methods
     # =========================================================================
@@ -98,6 +251,12 @@ class V60Asm:
 
     def add_imm_reg(self, size, imm_val, dst_reg):
         self._fmt1_imm_reg('add', size, imm_val, dst_reg)
+
+    def add_mem_rind_reg(self, size, addr_reg, dst_reg):
+        self._fmt1_mem_rind_reg('add', size, addr_reg, dst_reg)
+
+    def add_reg_mem_rind(self, size, src_reg, addr_reg):
+        self._fmt1_reg_mem_rind('add', size, src_reg, addr_reg)
 
     def sub_reg_reg(self, size, src_reg, dst_reg):
         self._fmt1_reg_reg('sub', size, src_reg, dst_reg)
@@ -110,6 +269,10 @@ class V60Asm:
 
     def cmp_imm_reg(self, size, imm_val, dst_reg):
         self._fmt1_imm_reg('cmp', size, imm_val, dst_reg)
+
+    def cmp_mem_rind_reg(self, size, addr_reg, dst_reg):
+        """CMP [Raddr], Rdst — compare memory value against register."""
+        self._fmt1_mem_rind_reg('cmp', size, addr_reg, dst_reg)
 
     def and_reg_reg(self, size, src_reg, dst_reg):
         self._fmt1_reg_reg('and', size, src_reg, dst_reg)
@@ -207,6 +370,18 @@ class V60Asm:
         opcode = 0xF7  # GETPSW with m=1
         mod = self._encode_mod_register(dst_reg)
         self.code.extend([opcode, mod])
+
+    # =========================================================================
+    # Raw data embedding
+    # =========================================================================
+    def data_byte(self, val):
+        self.code.append(val & 0xFF)
+
+    def data_word(self, val):
+        self.code.extend((val & 0xFFFF).to_bytes(2, 'little'))
+
+    def data_dword(self, val):
+        self.code.extend((val & 0xFFFFFFFF).to_bytes(4, 'little'))
 
     def write(self, filename):
         with open(filename, 'wb') as f:
@@ -367,7 +542,6 @@ def build_phase4_test():
     #   Bcc.short +4       ; taken → skip 2-byte INC R11 (2 bytes)
     #   INC.W R11          ; FAIL: reached if branch not taken (2 bytes)
     #   INC.W R10          ; SUCCESS counter (2 bytes)
-    # Total per test: 13 bytes (with CMP) or 6 bytes (without CMP)
 
     # === Group 1: CMP #5, R0 → 10-5=5 → Z=0, S=0, OV=0, CY=0 ===
 
@@ -489,10 +663,129 @@ def build_phase4_test():
     print(f"  Expected R11 = 0 (no failures)")
 
 
+def build_phase5a_test():
+    """Build Phase 5A test: Memory addressing modes."""
+    a = V60Asm()
+
+    # =====================================================================
+    # Setup: R0 = data area address (0x2000), R1 = test value
+    # =====================================================================
+    a.mov_imm_reg('w', 0x00002000, 0)   # R0 = 0x2000 (data area)
+    a.mov_imm_reg('w', 0xDEADBEEF, 1)  # R1 = 0xDEADBEEF
+
+    # =====================================================================
+    # Test 1: MOV.W R1, [R0]  — store via register indirect
+    # Expected: mem[0x2000] = 0xDEADBEEF
+    # =====================================================================
+    a.mov_reg_mem_rind('w', 1, 0)       # 3 bytes
+
+    # =====================================================================
+    # Test 2: MOV.W [R0], R2  — load via register indirect
+    # Expected: R2 = 0xDEADBEEF
+    # =====================================================================
+    a.mov_mem_rind_reg('w', 0, 2)       # 3 bytes
+
+    # =====================================================================
+    # Test 3: MOV.W R1, 8[R0]  — store with Disp8
+    # Expected: mem[0x2008] = 0xDEADBEEF
+    # =====================================================================
+    a.mov_reg_mem_disp8('w', 1, 0, 8)   # 4 bytes
+
+    # =====================================================================
+    # Test 4: MOV.W 8[R0], R3  — load with Disp8
+    # Expected: R3 = 0xDEADBEEF
+    # =====================================================================
+    a.mov_mem_disp8_reg('w', 0, 8, 3)   # 4 bytes
+
+    # =====================================================================
+    # Test 5: ADD.W [R0], R4  — load + operate (mem src, reg dst)
+    # R4 starts at 0. After: R4 = 0 + 0xDEADBEEF = 0xDEADBEEF
+    # =====================================================================
+    a.add_mem_rind_reg('w', 0, 4)       # 3 bytes
+
+    # =====================================================================
+    # Test 6: ADD.W R1, [R0]  — read-modify-write (reg src, mem dst)
+    # mem[0x2000] was 0xDEADBEEF, add 0xDEADBEEF → 0xBD5B7DDE
+    # =====================================================================
+    a.add_reg_mem_rind('w', 1, 0)       # 3 bytes
+
+    # =====================================================================
+    # Test 7: CMP.W [R0], R4  — load, compare, flags only (no mem write)
+    # mem[0x2000] = 0xBD5B7DDE, R4 = 0xDEADBEEF
+    # R4 - [R0] = 0xDEADBEEF - 0xBD5B7DDE = 0x21524111 → Z=0, S=0
+    # =====================================================================
+    a.cmp_mem_rind_reg('w', 0, 4)       # 3 bytes
+    a.getpsw(20)                         # R20 = PSW after CMP
+
+    # =====================================================================
+    # Test 8: MOV.W [R5]+, R6  — autoincrement load
+    # Setup: R5 = 0x2000
+    # Expected: R6 = mem[0x2000] = 0xBD5B7DDE (current value), R5 = 0x2004
+    # =====================================================================
+    a.mov_imm_reg('w', 0x00002000, 5)   # R5 = 0x2000
+    a.mov_mem_autoinc_reg('w', 5, 6)    # 3 bytes
+
+    # =====================================================================
+    # Test 9: MOV.W R1, -[R5]  — autodecrement store
+    # R5 = 0x2004 (from test 8). Pre-dec: R5 = 0x2000, then mem[0x2000] = R1
+    # Expected: R5 = 0x2000, mem[0x2000] = 0xDEADBEEF
+    # =====================================================================
+    a.mov_reg_mem_autodec('w', 1, 5)    # 3 bytes
+
+    # =====================================================================
+    # Test 10: INC.W [R0]  — Format III read-modify-write on memory
+    # mem[0x2000] = 0xDEADBEEF (from test 9). After: mem[0x2000] = 0xDEADBEF0
+    # Load result back to verify
+    # =====================================================================
+    a.inc_mem_rind('w', 0)              # 2 bytes
+    a.mov_mem_rind_reg('w', 0, 7)       # R7 = mem[0x2000] = 0xDEADBEF0
+
+    # =====================================================================
+    # Test 11: MOV.B R1, [R0]  — byte store
+    # Stores low byte of R1 (0xEF) to mem[0x2000]
+    # =====================================================================
+    a.mov_reg_mem_rind('b', 1, 0)       # 3 bytes
+    # Load back as byte to verify
+    a.mov_mem_rind_reg('b', 0, 8)       # R8 = 0xEF
+
+    # =====================================================================
+    # Test 12: MOV.H R1, 4[R0]  — halfword store with displacement
+    # Stores low halfword of R1 (0xBEEF) to mem[0x2004]
+    # =====================================================================
+    a.mov_reg_mem_disp8('h', 1, 0, 4)   # 4 bytes
+    a.mov_mem_disp8_reg('h', 0, 4, 9)   # R9 = 0xBEEF
+
+    # =====================================================================
+    # Verify all results are correct by loading into high registers
+    # =====================================================================
+    a.mov_reg_reg('w', 2, 21)    # R21 = R2 (should be 0xDEADBEEF)
+    a.mov_reg_reg('w', 5, 22)    # R22 = R5 (should be 0x2000)
+    a.mov_reg_reg('w', 6, 23)    # R23 = R6 (should be 0xBD5B7DDE)
+    a.mov_reg_reg('w', 7, 24)    # R24 = R7 (should be 0xDEADBEF0)
+
+    # HALT
+    a.halt()
+
+    a.write('tests/phase5a_test.bin')
+
+    print("\nPhase 5A test: Memory addressing modes")
+    print(f"  Binary size: {len(a.code)} bytes")
+    print(f"  Expected R2  = 0xDEADBEEF (load via [R0])")
+    print(f"  Expected R3  = 0xDEADBEEF (load via 8[R0])")
+    print(f"  Expected R4  = 0xDEADBEEF (ADD [R0], R4)")
+    print(f"  Expected R5  = 0x00002000 (autodec restore)")
+    print(f"  Expected R6  = 0xBD5B7DDE (autoinc load)")
+    print(f"  Expected R7  = 0xDEADBEF0 (INC [R0])")
+    print(f"  Expected R8  = 0x000000EF (byte load)")
+    print(f"  Expected R9  = 0x0000BEEF (half load)")
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'phase3':
         build_phase3_test()
     elif len(sys.argv) > 1 and sys.argv[1] == 'phase4':
         build_phase4_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase5a':
+        build_phase5a_test()
     else:
         build_phase2_test()

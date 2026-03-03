@@ -109,25 +109,24 @@ module v60_cpu
     logic [31:0] data_bus_rdata;
 
     // Bus arbitration: data bus has priority over fetch.
-    // data_bus_owns tracks ownership through multi-cycle transactions.
+    // response_to_data tracks WHO submitted the in-flight bus request so
+    // responses are routed correctly even when a data bus request arrives
+    // while a fetch is already in-flight.
     logic data_bus_active;
-    logic data_bus_owns;
+    logic response_to_data;
 
     assign data_bus_active = (data_bus_req != BUS_IDLE);
 
-    // Registered ownership flag: set when data bus starts a transaction,
-    // cleared when the bus interface returns to idle.
+    // Latch who submitted the request when bus_if accepts it (idle→busy).
+    // Cleared when bus returns to idle with no new request pending.
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n)
-            data_bus_owns <= 1'b0;
-        else if (data_bus_active && !bus_if_busy)
-            data_bus_owns <= 1'b1;   // Data bus is starting a new transaction
+            response_to_data <= 1'b0;
+        else if (!bus_if_busy && arb_bus_req != BUS_IDLE)
+            response_to_data <= data_bus_active;  // Latch at submission time
         else if (!bus_if_busy)
-            data_bus_owns <= 1'b0;   // Transaction complete, release ownership
+            response_to_data <= 1'b0;
     end
-
-    logic data_bus_selected;
-    assign data_bus_selected = data_bus_active || data_bus_owns;
 
     always_comb begin
         if (data_bus_active) begin
@@ -143,15 +142,15 @@ module v60_cpu
         end
     end
 
-    // Route responses using ownership flag
-    assign fetch_bus_valid = bus_if_valid && !data_bus_selected;
+    // Route responses based on who submitted the in-flight request
+    assign fetch_bus_valid = bus_if_valid && !response_to_data;
     assign fetch_bus_rdata = bus_if_rdata;
-    assign data_bus_valid  = bus_if_valid && data_bus_selected;
+    assign data_bus_valid  = bus_if_valid && response_to_data;
     assign data_bus_rdata  = bus_if_rdata;
 
-    // Fetch busy includes actual bus busy and data bus owning the bus
+    // Fetch is blocked when bus is busy (any transaction) or data bus wants priority
     logic fetch_bus_busy;
-    assign fetch_bus_busy = bus_if_busy || data_bus_selected;
+    assign fetch_bus_busy = bus_if_busy || data_bus_active;
 
     // Tie off unused signals
     assign preg_wr_en   = 1'b0;

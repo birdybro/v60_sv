@@ -176,7 +176,8 @@ package v60_pkg;
         ST_MEM_READ_WAIT = 5'd17,
         ST_MEM_WRITE_WAIT= 5'd18,
         ST_RESET_VEC     = 5'd19,
-        ST_RESET_VEC_WAIT= 5'd20
+        ST_RESET_VEC_WAIT= 5'd20,
+        ST_EXECUTE2      = 5'd21
     } fsm_state_t;
 
     // =========================================================================
@@ -304,7 +305,7 @@ package v60_pkg;
     // =========================================================================
     localparam int IBUF_SIZE    = 24;
     localparam int MAX_INST_LEN = 22;
-    localparam int FETCH_WINDOW = 8;
+    localparam int FETCH_WINDOW = 12;
 
     // =========================================================================
     // Addressing mode encoding (mod field, byte after opcode in Format I/III)
@@ -339,6 +340,10 @@ package v60_pkg;
         logic           is_privileged;
         logic [31:0]    imm_value;    // Immediate operand or displacement
         logic [5:0]     inst_len;
+        logic           is_mem_src;   // Source operand requires memory access
+        logic           is_mem_dst;   // Destination operand requires memory access
+        logic           auto_inc;     // Post-increment side effect
+        logic           auto_dec;     // Pre-decrement side effect
     } decoded_inst_t;
 
 endpackage

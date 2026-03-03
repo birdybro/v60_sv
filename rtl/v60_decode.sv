@@ -1,14 +1,16 @@
 // v60_decode.sv — Instruction decoder
-// Phase 3: Decodes Format V (NOP, HALT), Format IV (Bcc),
-//          Format I (MOV, ADD, SUB, CMP, AND, OR, XOR, ADDC, SUBC, NOT, NEG),
-//          Format III (GETPSW, INC, DEC)
+// Phase 5A: Decodes Format V (NOP, HALT), Format IV (Bcc),
+//           Format I (MOV, ADD, SUB, CMP, AND, OR, XOR, ADDC, SUBC, NOT, NEG),
+//           Format III (GETPSW, INC, DEC)
+//           Memory addressing modes: [Rn], [Rn]+, -[Rn], Disp8/16/32[Rn],
+//           PCDisp8/16/32, DirectAddr
 // Combinational decode from fetch buffer window
 
 /* verilator lint_off UNUSEDSIGNAL */
 module v60_decode
     import v60_pkg::*;
 (
-    // Fetch buffer window (8 bytes visible)
+    // Fetch buffer window (12 bytes visible)
     input  logic [7:0]  ibuf_data [FETCH_WINDOW],
     input  logic [4:0]  ibuf_valid_count,
 
@@ -70,7 +72,7 @@ module v60_decode
             is_fmt1_mov = 1'b1; fmt1_alu_op = ALU_MOV; fmt1_size = SZ_HALF;
         end else if (opcode == OP_MOV_W) begin
             is_fmt1_mov = 1'b1; fmt1_alu_op = ALU_MOV; fmt1_size = SZ_WORD;
-        // ALU ops in 0x80-0xBF range (Phase 3+, but recognize them now)
+        // ALU ops in 0x80-0xBF range
         end else if (opcode == OP_ADD_B) begin
             is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_ADD; fmt1_size = SZ_BYTE;
         end else if (opcode == OP_ADD_H) begin
@@ -177,15 +179,21 @@ module v60_decode
     logic [4:0] f1_mod_reg;
     logic [31:0] f1_mod_imm;
     logic [5:0] f1_mod_len;
+    logic       f1_mod_is_mem;
+    logic       f1_mod_auto_inc;
+    logic       f1_mod_auto_dec;
 
     assign f1_mod_hi = fmt1_mod_byte[7:5];
     assign f1_mod_lo = fmt1_mod_byte[4:0];
 
     always_comb begin
-        f1_mod_am  = AM_ERROR;
-        f1_mod_reg = 5'd0;
-        f1_mod_imm = 32'h0;
-        f1_mod_len = 6'd1;
+        f1_mod_am       = AM_ERROR;
+        f1_mod_reg      = 5'd0;
+        f1_mod_imm      = 32'h0;
+        f1_mod_len      = 6'd1;
+        f1_mod_is_mem   = 1'b0;
+        f1_mod_auto_inc = 1'b0;
+        f1_mod_auto_dec = 1'b0;
 
         if (fmt1_m) begin
             // m=1 dispatch on mod[7:5]
@@ -195,20 +203,19 @@ module v60_decode
                     f1_mod_reg = f1_mod_lo;
                     f1_mod_len = 6'd1;
                 end
-                3'd1: begin  // Register Indirect
-                    f1_mod_am  = AM_REG_INDIRECT;
-                    f1_mod_reg = f1_mod_lo;
-                    f1_mod_len = 6'd1;
+                3'd4: begin  // Autoincrement [Rn]+
+                    f1_mod_am       = AM_REG_INDIRECT_INC;
+                    f1_mod_reg      = f1_mod_lo;
+                    f1_mod_len      = 6'd1;
+                    f1_mod_is_mem   = 1'b1;
+                    f1_mod_auto_inc = 1'b1;
                 end
-                3'd4: begin  // Autoincrement
-                    f1_mod_am  = AM_REG_INDIRECT_INC;
-                    f1_mod_reg = f1_mod_lo;
-                    f1_mod_len = 6'd1;
-                end
-                3'd5: begin  // Autodecrement
-                    f1_mod_am  = AM_REG_INDIRECT_DEC;
-                    f1_mod_reg = f1_mod_lo;
-                    f1_mod_len = 6'd1;
+                3'd5: begin  // Autodecrement -[Rn]
+                    f1_mod_am       = AM_REG_INDIRECT_DEC;
+                    f1_mod_reg      = f1_mod_lo;
+                    f1_mod_len      = 6'd1;
+                    f1_mod_is_mem   = 1'b1;
+                    f1_mod_auto_dec = 1'b1;
                 end
                 default: begin
                     f1_mod_am  = AM_ERROR;
@@ -219,15 +226,31 @@ module v60_decode
             // m=0 dispatch on mod[7:5]
             case (f1_mod_hi)
                 3'd0: begin  // Displacement 8-bit from register
-                    f1_mod_am  = AM_DISP16_REG;
-                    f1_mod_reg = f1_mod_lo;
-                    f1_mod_imm = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
-                    f1_mod_len = 6'd2;
+                    f1_mod_am     = AM_DISP16_REG;
+                    f1_mod_reg    = f1_mod_lo;
+                    f1_mod_imm    = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                    f1_mod_len    = 6'd2;
+                    f1_mod_is_mem = 1'b1;
                 end
-                3'd3: begin  // Register Indirect (also valid for m=0)
-                    f1_mod_am  = AM_REG_INDIRECT;
-                    f1_mod_reg = f1_mod_lo;
-                    f1_mod_len = 6'd1;
+                3'd1: begin  // Displacement 16-bit from register
+                    f1_mod_am     = AM_DISP16_REG;
+                    f1_mod_reg    = f1_mod_lo;
+                    f1_mod_imm    = {{16{ibuf_data[4][7]}}, ibuf_data[4], ibuf_data[3]};
+                    f1_mod_len    = 6'd3;
+                    f1_mod_is_mem = 1'b1;
+                end
+                3'd2: begin  // Displacement 32-bit from register
+                    f1_mod_am     = AM_DISP32_REG;
+                    f1_mod_reg    = f1_mod_lo;
+                    f1_mod_imm    = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                    f1_mod_len    = 6'd5;
+                    f1_mod_is_mem = 1'b1;
+                end
+                3'd3: begin  // Register Indirect [Rn]
+                    f1_mod_am     = AM_REG_INDIRECT;
+                    f1_mod_reg    = f1_mod_lo;
+                    f1_mod_len    = 6'd1;
+                    f1_mod_is_mem = 1'b1;
                 end
                 3'd7: begin  // Group7 — sub-dispatch on mod[4:0]
                     if (f1_mod_lo <= 5'd15) begin
@@ -235,18 +258,43 @@ module v60_decode
                         f1_mod_am  = AM_IMM_QUICK;
                         f1_mod_imm = {28'h0, fmt1_mod_byte[3:0]};
                         f1_mod_len = 6'd1;
+                    end else if (f1_mod_lo == 5'd16) begin
+                        // PCDisp8
+                        f1_mod_am     = AM_PC_DISP16;
+                        f1_mod_imm    = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                        f1_mod_len    = 6'd2;
+                        f1_mod_is_mem = 1'b1;
+                    end else if (f1_mod_lo == 5'd17) begin
+                        // PCDisp16
+                        f1_mod_am     = AM_PC_DISP16;
+                        f1_mod_imm    = {{16{ibuf_data[4][7]}}, ibuf_data[4], ibuf_data[3]};
+                        f1_mod_len    = 6'd3;
+                        f1_mod_is_mem = 1'b1;
+                    end else if (f1_mod_lo == 5'd18) begin
+                        // PCDisp32
+                        f1_mod_am     = AM_PC_DISP32;
+                        f1_mod_imm    = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                        f1_mod_len    = 6'd5;
+                        f1_mod_is_mem = 1'b1;
+                    end else if (f1_mod_lo == 5'd19) begin
+                        // DirectAddr (absolute 32-bit address)
+                        f1_mod_am     = AM_DIRECT_ADDR;
+                        f1_mod_imm    = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                        f1_mod_len    = 6'd5;
+                        f1_mod_is_mem = 1'b1;
                     end else if (f1_mod_lo == 5'd20) begin
                         // Immediate (mod byte 0xF4): value follows mod byte
                         f1_mod_am  = AM_IMMEDIATE;
                         f1_mod_imm = fmt1_imm_val;
                         f1_mod_len = 6'd1 + {3'd0, imm_bytes};
                     end else begin
-                        // Other Group7 entries (Phase 5+)
+                        // Other Group7 entries (Phase 5B: indirect modes)
                         f1_mod_am  = AM_ERROR;
                         f1_mod_len = 6'd1;
                     end
                 end
                 default: begin
+                    // hi=4,5,6: Indirect modes (Phase 5B)
                     f1_mod_am  = AM_ERROR;
                     f1_mod_len = 6'd1;
                 end
@@ -261,15 +309,36 @@ module v60_decode
     logic [4:0] f3_mod_lo;
     addr_mode_t f3_mod_am;
     logic [4:0] f3_mod_reg;
+    logic [31:0] f3_mod_imm;
     logic [5:0] f3_mod_len;
+    logic       f3_mod_is_mem;
+    logic       f3_mod_auto_inc;
+    logic       f3_mod_auto_dec;
 
     assign f3_mod_hi = fmt3_mod_byte[7:5];
     assign f3_mod_lo = fmt3_mod_byte[4:0];
 
+    // Format III immediate value extraction (at byte offset 2: opcode+modbyte+imm)
+    logic [31:0] fmt3_imm_val;
+    logic [2:0]  fmt3_imm_bytes;
     always_comb begin
-        f3_mod_am  = AM_ERROR;
-        f3_mod_reg = 5'd0;
-        f3_mod_len = 6'd1;
+        // For Format III, the data size comes from the opcode
+        // INC/DEC: ((opcode & 0x06) >> 1) gives 0=B, 1=H, 2=W
+        // But we need this for the immediate extraction; for now just
+        // use the final decoded data_size. Since Format III imm modes
+        // are only ImmQuick (no full imm), this is unused but kept for consistency.
+        fmt3_imm_bytes = 3'd4;
+        fmt3_imm_val = 32'h0;
+    end
+
+    always_comb begin
+        f3_mod_am       = AM_ERROR;
+        f3_mod_reg      = 5'd0;
+        f3_mod_imm      = 32'h0;
+        f3_mod_len      = 6'd1;
+        f3_mod_is_mem   = 1'b0;
+        f3_mod_auto_inc = 1'b0;
+        f3_mod_auto_dec = 1'b0;
 
         if (fmt3_m) begin
             // m=1 dispatch
@@ -279,6 +348,20 @@ module v60_decode
                     f3_mod_reg = f3_mod_lo;
                     f3_mod_len = 6'd1;
                 end
+                3'd4: begin  // Autoincrement [Rn]+
+                    f3_mod_am       = AM_REG_INDIRECT_INC;
+                    f3_mod_reg      = f3_mod_lo;
+                    f3_mod_len      = 6'd1;
+                    f3_mod_is_mem   = 1'b1;
+                    f3_mod_auto_inc = 1'b1;
+                end
+                3'd5: begin  // Autodecrement -[Rn]
+                    f3_mod_am       = AM_REG_INDIRECT_DEC;
+                    f3_mod_reg      = f3_mod_lo;
+                    f3_mod_len      = 6'd1;
+                    f3_mod_is_mem   = 1'b1;
+                    f3_mod_auto_dec = 1'b1;
+                end
                 default: begin
                     f3_mod_am  = AM_ERROR;
                     f3_mod_len = 6'd1;
@@ -287,10 +370,61 @@ module v60_decode
         end else begin
             // m=0 dispatch
             case (f3_mod_hi)
+                3'd0: begin  // Displacement 8-bit from register
+                    f3_mod_am     = AM_DISP16_REG;
+                    f3_mod_reg    = f3_mod_lo;
+                    f3_mod_imm    = {{24{ibuf_data[2][7]}}, ibuf_data[2]};
+                    f3_mod_len    = 6'd2;
+                    f3_mod_is_mem = 1'b1;
+                end
+                3'd1: begin  // Displacement 16-bit from register
+                    f3_mod_am     = AM_DISP16_REG;
+                    f3_mod_reg    = f3_mod_lo;
+                    f3_mod_imm    = {{16{ibuf_data[3][7]}}, ibuf_data[3], ibuf_data[2]};
+                    f3_mod_len    = 6'd3;
+                    f3_mod_is_mem = 1'b1;
+                end
+                3'd2: begin  // Displacement 32-bit from register
+                    f3_mod_am     = AM_DISP32_REG;
+                    f3_mod_reg    = f3_mod_lo;
+                    f3_mod_imm    = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                    f3_mod_len    = 6'd5;
+                    f3_mod_is_mem = 1'b1;
+                end
+                3'd3: begin  // Register Indirect [Rn]
+                    f3_mod_am     = AM_REG_INDIRECT;
+                    f3_mod_reg    = f3_mod_lo;
+                    f3_mod_len    = 6'd1;
+                    f3_mod_is_mem = 1'b1;
+                end
                 3'd7: begin  // Group7
                     if (f3_mod_lo <= 5'd15) begin
                         f3_mod_am  = AM_IMM_QUICK;
                         f3_mod_len = 6'd1;
+                    end else if (f3_mod_lo == 5'd16) begin
+                        // PCDisp8
+                        f3_mod_am     = AM_PC_DISP16;
+                        f3_mod_imm    = {{24{ibuf_data[2][7]}}, ibuf_data[2]};
+                        f3_mod_len    = 6'd2;
+                        f3_mod_is_mem = 1'b1;
+                    end else if (f3_mod_lo == 5'd17) begin
+                        // PCDisp16
+                        f3_mod_am     = AM_PC_DISP16;
+                        f3_mod_imm    = {{16{ibuf_data[3][7]}}, ibuf_data[3], ibuf_data[2]};
+                        f3_mod_len    = 6'd3;
+                        f3_mod_is_mem = 1'b1;
+                    end else if (f3_mod_lo == 5'd18) begin
+                        // PCDisp32
+                        f3_mod_am     = AM_PC_DISP32;
+                        f3_mod_imm    = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                        f3_mod_len    = 6'd5;
+                        f3_mod_is_mem = 1'b1;
+                    end else if (f3_mod_lo == 5'd19) begin
+                        // DirectAddr
+                        f3_mod_am     = AM_DIRECT_ADDR;
+                        f3_mod_imm    = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                        f3_mod_len    = 6'd5;
+                        f3_mod_is_mem = 1'b1;
                     end else begin
                         f3_mod_am  = AM_ERROR;
                         f3_mod_len = 6'd1;
@@ -374,6 +508,9 @@ module v60_decode
                 decoded.am_dst    = f1_mod_am;
                 decoded.reg_dst   = f1_mod_reg;
                 decoded.imm_value = f1_mod_imm;
+                decoded.is_mem_dst = f1_mod_is_mem;
+                decoded.auto_inc   = f1_mod_auto_inc;
+                decoded.auto_dec   = f1_mod_auto_dec;
             end else begin
                 // d=1: reg field is destination, mod field is source
                 decoded.am_src    = f1_mod_am;
@@ -381,6 +518,9 @@ module v60_decode
                 decoded.am_dst    = AM_REGISTER;
                 decoded.reg_dst   = fmt1_reg;
                 decoded.imm_value = f1_mod_imm;
+                decoded.is_mem_src = f1_mod_is_mem;
+                decoded.auto_inc   = f1_mod_auto_inc;
+                decoded.auto_dec   = f1_mod_auto_dec;
             end
 
             // MOV does NOT modify flags; ALU ops (ADD, SUB, etc.) do
@@ -403,6 +543,10 @@ module v60_decode
             decoded.data_size  = SZ_WORD;
             decoded.am_dst     = f3_mod_am;
             decoded.reg_dst    = f3_mod_reg;
+            decoded.imm_value  = f3_mod_imm;
+            decoded.is_mem_dst = f3_mod_is_mem;
+            decoded.auto_inc   = f3_mod_auto_inc;
+            decoded.auto_dec   = f3_mod_auto_dec;
             decoded.inst_len   = 6'd1 + f3_mod_len;
             decode_valid       = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
 
@@ -417,6 +561,10 @@ module v60_decode
             decoded.writes_flags = 1'b1;
             decoded.am_dst      = f3_mod_am;
             decoded.reg_dst     = f3_mod_reg;
+            decoded.imm_value   = f3_mod_imm;
+            decoded.is_mem_dst  = f3_mod_is_mem;
+            decoded.auto_inc    = f3_mod_auto_inc;
+            decoded.auto_dec    = f3_mod_auto_dec;
             decoded.inst_len    = 6'd1 + f3_mod_len;
             decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_INC_H_0 || opcode == OP_INC_H_1) begin
@@ -426,6 +574,10 @@ module v60_decode
             decoded.writes_flags = 1'b1;
             decoded.am_dst      = f3_mod_am;
             decoded.reg_dst     = f3_mod_reg;
+            decoded.imm_value   = f3_mod_imm;
+            decoded.is_mem_dst  = f3_mod_is_mem;
+            decoded.auto_inc    = f3_mod_auto_inc;
+            decoded.auto_dec    = f3_mod_auto_dec;
             decoded.inst_len    = 6'd1 + f3_mod_len;
             decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_INC_W_0 || opcode == OP_INC_W_1) begin
@@ -435,6 +587,10 @@ module v60_decode
             decoded.writes_flags = 1'b1;
             decoded.am_dst      = f3_mod_am;
             decoded.reg_dst     = f3_mod_reg;
+            decoded.imm_value   = f3_mod_imm;
+            decoded.is_mem_dst  = f3_mod_is_mem;
+            decoded.auto_inc    = f3_mod_auto_inc;
+            decoded.auto_dec    = f3_mod_auto_dec;
             decoded.inst_len    = 6'd1 + f3_mod_len;
             decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_DEC_B_0 || opcode == OP_DEC_B_1) begin
@@ -444,6 +600,10 @@ module v60_decode
             decoded.writes_flags = 1'b1;
             decoded.am_dst      = f3_mod_am;
             decoded.reg_dst     = f3_mod_reg;
+            decoded.imm_value   = f3_mod_imm;
+            decoded.is_mem_dst  = f3_mod_is_mem;
+            decoded.auto_inc    = f3_mod_auto_inc;
+            decoded.auto_dec    = f3_mod_auto_dec;
             decoded.inst_len    = 6'd1 + f3_mod_len;
             decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_DEC_H_0 || opcode == OP_DEC_H_1) begin
@@ -453,6 +613,10 @@ module v60_decode
             decoded.writes_flags = 1'b1;
             decoded.am_dst      = f3_mod_am;
             decoded.reg_dst     = f3_mod_reg;
+            decoded.imm_value   = f3_mod_imm;
+            decoded.is_mem_dst  = f3_mod_is_mem;
+            decoded.auto_inc    = f3_mod_auto_inc;
+            decoded.auto_dec    = f3_mod_auto_dec;
             decoded.inst_len    = 6'd1 + f3_mod_len;
             decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_DEC_W_0 || opcode == OP_DEC_W_1) begin
@@ -462,6 +626,10 @@ module v60_decode
             decoded.writes_flags = 1'b1;
             decoded.am_dst      = f3_mod_am;
             decoded.reg_dst     = f3_mod_reg;
+            decoded.imm_value   = f3_mod_imm;
+            decoded.is_mem_dst  = f3_mod_is_mem;
+            decoded.auto_inc    = f3_mod_auto_inc;
+            decoded.auto_dec    = f3_mod_auto_dec;
             decoded.inst_len    = 6'd1 + f3_mod_len;
             decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
 

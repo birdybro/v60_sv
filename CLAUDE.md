@@ -84,6 +84,8 @@ module v60_cpu #(
 ```
 RESET → RESET_VEC (read reset vector) → FETCH → DECODE → EXECUTE → WRITEBACK → FETCH
 DECODE → HALT (if HALT opcode)
+EXECUTE → MEM_READ → MEM_READ_WAIT → EXECUTE2 → [MEM_WRITE → MEM_WRITE_WAIT →] WRITEBACK
+EXECUTE → MEM_WRITE → MEM_WRITE_WAIT → WRITEBACK (MOV to memory, write-only)
 ```
 
 ### Key V60 ISA Facts
@@ -107,7 +109,8 @@ DPI-exported functions (`get_pc`, `get_psw`, `get_gpr`, `mem_write_byte`, etc.) 
 - **Phase 2** ✅ — Register ops & immediate MOV (MOVB/H/W, GETPSW)
 - **Phase 3** ✅ — Core ALU (ADD, SUB, CMP, AND, OR, XOR, NOT, NEG, INC, DEC, ADDC, SUBC)
 - **Phase 4** ✅ — Conditional branches (all 14 Bcc conditions)
-- **Phase 5** — All 21 addressing modes
+- **Phase 5A** ✅ — Simple memory addressing modes ([Rn], [Rn]+, -[Rn], Disp8/16/32[Rn], PCDisp, DirectAddr)
+- **Phase 5B** — Indirect + double displacement addressing modes
 - **Phase 6** — Control flow (JMP, JSR, RET, CALL, PREPARE/DISPOSE, PUSH/POP)
 - **Phase 7** — Multiply, divide, shifts, rotates, bit ops
 - **Phase 8** — System instructions & I/O
