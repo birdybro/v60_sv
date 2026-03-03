@@ -1,0 +1,7 @@
+# Build artifacts
+sim/obj_dir/
+mame/build_out/
+
+# Simulation output
+*.trace
+*.vcd
