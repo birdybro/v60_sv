@@ -345,18 +345,18 @@ module v60_control
             end
 
             ST_WRITEBACK: begin
-                // Consume instruction bytes from fetch buffer
-                fetch_consume_count = inst_r.inst_len;
-                fetch_consume_valid = 1'b1;
+                // Reconfigure flags_cond so the taken-branch check below is correct
+                flags_cond = inst_r.cond;
 
-                // Advance PC if not a taken branch (branch already set PC)
+                // For taken branches: fetch buffer was already flushed and PC set
+                // in EXECUTE, so skip consume and PC update.
+                // For everything else: consume instruction bytes and advance PC.
                 if (!(inst_r.is_branch && flags_cond_met)) begin
+                    fetch_consume_count = inst_r.inst_len;
+                    fetch_consume_valid = 1'b1;
                     pc_wr_en   = 1'b1;
                     pc_wr_data = pc + {26'h0, inst_r.inst_len};
                 end
-
-                // Reconfigure flags_cond for the taken-branch check above
-                flags_cond = inst_r.cond;
             end
 
             default: ;

@@ -360,7 +360,7 @@ module v60_decode
         // Format I: Two-operand instructions
         // Byte 0: opcode, Byte 1: [7]=0/[6]=m/[5]=d/[4:0]=reg, Bytes 2+: mod
         // =====================================================================
-        end else if (is_fmt1 && !fmt1_is_fmt2) begin
+        end else if (is_fmt1 && ibuf_valid_count >= 5'd2 && !fmt1_is_fmt2) begin
             decoded.format    = FMT_I;
             decoded.alu_op    = fmt1_alu_op;
             decoded.data_size = fmt1_size;
@@ -388,6 +388,10 @@ module v60_decode
 
             decoded.inst_len = 6'd2 + f1_mod_len;
             decode_valid     = (ibuf_valid_count >= (5'd2 + f1_mod_len[4:0]));
+
+        // Format I recognized but not enough bytes yet (or Format II — future)
+        end else if (is_fmt1) begin
+            decode_valid = 1'b0;
 
         // =====================================================================
         // Format III: Single-operand instructions (opcode LSB = m bit)

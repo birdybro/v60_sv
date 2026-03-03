@@ -171,6 +171,34 @@ class V60Asm:
         self.code.extend([opcode, mod])
 
     # =========================================================================
+    # Format IV: Bcc (branches)
+    # =========================================================================
+    # Condition codes
+    BV, BNV, BL, BNL = 0x0, 0x1, 0x2, 0x3
+    BE, BNE, BNH, BH = 0x4, 0x5, 0x6, 0x7
+    BN, BP, BR, BNOP = 0x8, 0x9, 0xA, 0xB
+    BLT, BGE, BLE, BGT = 0xC, 0xD, 0xE, 0xF
+
+    def bcc_short(self, cond, disp):
+        """Bcc short: 2 bytes (opcode=0x60|cond, 8-bit signed displacement).
+        Target = PC_of_branch + disp."""
+        opcode = 0x60 | (cond & 0xF)
+        self.code.extend([opcode, disp & 0xFF])
+
+    def bcc_long(self, cond, disp):
+        """Bcc long: 3 bytes (opcode=0x70|cond, 16-bit signed LE displacement).
+        Target = PC_of_branch + disp."""
+        opcode = 0x70 | (cond & 0xF)
+        self.code.append(opcode)
+        self.code.extend((disp & 0xFFFF).to_bytes(2, 'little'))
+
+    def br_short(self, disp):
+        self.bcc_short(self.BR, disp)
+
+    def br_long(self, disp):
+        self.bcc_long(self.BR, disp)
+
+    # =========================================================================
     # GETPSW
     # =========================================================================
     def getpsw(self, dst_reg):
@@ -325,8 +353,146 @@ def build_phase3_test():
         print(f"  0x{0x1000+i:04X}: 0x{b:02X}")
 
 
+def build_phase4_test():
+    """Build Phase 4 test: All 14 Bcc conditions."""
+    a = V60Asm()
+
+    # Setup
+    a.mov_imm_reg('w', 10, 0)    # R0 = 10 (reference for CMP)
+    a.mov_imm_reg('w', 0, 10)    # R10 = 0 (success counter)
+    a.mov_imm_reg('w', 0, 11)    # R11 = 0 (fail marker)
+
+    # Pattern for each "taken" test:
+    #   CMP.W #val, R0     ; set flags (7 bytes)
+    #   Bcc.short +4       ; taken → skip 2-byte INC R11 (2 bytes)
+    #   INC.W R11          ; FAIL: reached if branch not taken (2 bytes)
+    #   INC.W R10          ; SUCCESS counter (2 bytes)
+    # Total per test: 13 bytes (with CMP) or 6 bytes (without CMP)
+
+    # === Group 1: CMP #5, R0 → 10-5=5 → Z=0, S=0, OV=0, CY=0 ===
+
+    # Test 1: BNV (OV=0 → taken)
+    a.cmp_imm_reg('w', 5, 0)
+    a.bcc_short(a.BNV, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=1
+
+    # Test 2: BNL (CY=0 → taken)
+    a.cmp_imm_reg('w', 5, 0)
+    a.bcc_short(a.BNL, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=2
+
+    # Test 3: BNE (Z=0 → taken)
+    a.cmp_imm_reg('w', 5, 0)
+    a.bcc_short(a.BNE, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=3
+
+    # Test 4: BH (!CY & !Z → taken)
+    a.cmp_imm_reg('w', 5, 0)
+    a.bcc_short(a.BH, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=4
+
+    # Test 5: BP (S=0 → taken)
+    a.cmp_imm_reg('w', 5, 0)
+    a.bcc_short(a.BP, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=5
+
+    # Test 6: BGE (!(S^OV) → taken)
+    a.cmp_imm_reg('w', 5, 0)
+    a.bcc_short(a.BGE, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=6
+
+    # Test 7: BGT (!((S^OV)|Z) → taken)
+    a.cmp_imm_reg('w', 5, 0)
+    a.bcc_short(a.BGT, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=7
+
+    # === Group 2: CMP #10, R0 → 10-10=0 → Z=1, S=0, OV=0, CY=0 ===
+
+    # Test 8: BE (Z=1 → taken)
+    a.cmp_imm_reg('w', 10, 0)
+    a.bcc_short(a.BE, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=8
+
+    # Test 9: BNH (CY|Z → taken since Z=1)
+    a.cmp_imm_reg('w', 10, 0)
+    a.bcc_short(a.BNH, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=9
+
+    # Test 10: BLE ((S^OV)|Z → taken since Z=1)
+    a.cmp_imm_reg('w', 10, 0)
+    a.bcc_short(a.BLE, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=10
+
+    # === Group 3: CMP #15, R0 → 10-15=-5 → Z=0, S=1, OV=0, CY=1 ===
+
+    # Test 11: BL (CY=1 → taken)
+    a.cmp_imm_reg('w', 15, 0)
+    a.bcc_short(a.BL, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=11
+
+    # Test 12: BN (S=1 → taken)
+    a.cmp_imm_reg('w', 15, 0)
+    a.bcc_short(a.BN, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=12
+
+    # Test 13: BLT (S^OV = 1^0 = 1 → taken)
+    a.cmp_imm_reg('w', 15, 0)
+    a.bcc_short(a.BLT, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=13
+
+    # === Group 4: Overflow test ===
+    # R2 = 0x7FFFFFFF, INC → 0x80000000, OV=1
+    a.mov_imm_reg('w', 0x7FFFFFFF, 2)
+    a.inc_reg('w', 2)
+
+    # Test 14: BV (OV=1 → taken)
+    a.bcc_short(a.BV, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=14
+
+    # === Group 5: BR (always) and NOP (never) ===
+
+    # Test 15: BR (always → taken)
+    a.bcc_short(a.BR, 4)
+    a.inc_reg('w', 11)
+    a.inc_reg('w', 10)          # R10=15
+
+    # Test 16: BNOP (never → NOT taken, falls through to INC R10)
+    a.bcc_short(a.BNOP, 4)
+    a.inc_reg('w', 10)          # R10=16 (success: branch was not taken)
+
+    # Final: capture R10 (should be 16) into R12 for easy trace inspection
+    a.mov_reg_reg('w', 10, 12)
+    a.getpsw(13)
+
+    # HALT
+    a.halt()
+
+    a.write('tests/phase4_test.bin')
+
+    print("\nPhase 4 test: 14 Bcc conditions + BR + NOP")
+    print(f"  Binary size: {len(a.code)} bytes")
+    print(f"  Expected R10 = 16 (all tests passed)")
+    print(f"  Expected R11 = 0 (no failures)")
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'phase3':
         build_phase3_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase4':
+        build_phase4_test()
     else:
         build_phase2_test()

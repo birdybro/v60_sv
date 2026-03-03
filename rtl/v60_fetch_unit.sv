@@ -76,15 +76,23 @@ module v60_fetch_unit
         ibuf_valid_count = (fill_level > FETCH_WINDOW[4:0]) ? FETCH_WINDOW[4:0] : fill_level;
     end
 
-    // Bus request outputs
+    // Bus request outputs — always issue aligned reads
+    logic [31:0] aligned_fetch_addr;
+    always_comb begin
+        if (BUS_BYTES == 2)
+            aligned_fetch_addr = {fetch_addr[31:1], 1'b0};
+        else
+            aligned_fetch_addr = {fetch_addr[31:2], 2'b00};
+    end
+
     always_comb begin
         bus_req  = BUS_IDLE;
-        bus_addr = fetch_addr;
+        bus_addr = aligned_fetch_addr;
         bus_size = (BUS_BYTES == 2) ? SZ_HALF : SZ_WORD;
 
         if (fstate == FS_REQUEST) begin
             bus_req  = BUS_READ;
-            bus_addr = fetch_addr;
+            bus_addr = aligned_fetch_addr;
         end
     end
 
@@ -126,21 +134,35 @@ module v60_fetch_unit
 
                 FS_WAIT: begin
                     if (bus_valid) begin
-                        // Store fetched bytes into buffer
+                        // Store fetched bytes into buffer.
+                        // When fetch_addr is unaligned, we fetched from the
+                        // aligned address; only store the relevant bytes.
                         if (BUS_BYTES == 2) begin
-                            buffer[(wr_ptr) % IBUF_SIZE[4:0]]     <= bus_rdata[7:0];
-                            buffer[(wr_ptr + 1) % IBUF_SIZE[4:0]] <= bus_rdata[15:8];
-                            wr_ptr     <= (wr_ptr + 5'd2) % IBUF_SIZE[4:0];
-                            fill_level <= fill_level + 5'd2;
+                            if (fetch_addr[0]) begin
+                                // Odd address: aligned read got {byte_at_addr, prev_byte}.
+                                // We only need the high byte (byte at our target address).
+                                buffer[(wr_ptr) % IBUF_SIZE[4:0]] <= bus_rdata[15:8];
+                                wr_ptr     <= (wr_ptr + 5'd1) % IBUF_SIZE[4:0];
+                                fill_level <= fill_level + 5'd1;
+                                fetch_addr <= fetch_addr + 32'd1;
+                            end else begin
+                                // Even address: normal 2-byte fetch
+                                buffer[(wr_ptr) % IBUF_SIZE[4:0]]     <= bus_rdata[7:0];
+                                buffer[(wr_ptr + 1) % IBUF_SIZE[4:0]] <= bus_rdata[15:8];
+                                wr_ptr     <= (wr_ptr + 5'd2) % IBUF_SIZE[4:0];
+                                fill_level <= fill_level + 5'd2;
+                                fetch_addr <= fetch_addr + 32'd2;
+                            end
                         end else begin
+                            // 32-bit bus: TODO handle unaligned
                             buffer[(wr_ptr) % IBUF_SIZE[4:0]]     <= bus_rdata[7:0];
                             buffer[(wr_ptr + 1) % IBUF_SIZE[4:0]] <= bus_rdata[15:8];
                             buffer[(wr_ptr + 2) % IBUF_SIZE[4:0]] <= bus_rdata[23:16];
                             buffer[(wr_ptr + 3) % IBUF_SIZE[4:0]] <= bus_rdata[31:24];
                             wr_ptr     <= (wr_ptr + 5'd4) % IBUF_SIZE[4:0];
                             fill_level <= fill_level + 5'd4;
+                            fetch_addr <= fetch_addr + 32'd4;
                         end
-                        fetch_addr <= fetch_addr + 32'(BUS_BYTES);
                         fstate     <= FS_IDLE;
                     end
                 end
@@ -150,7 +172,10 @@ module v60_fetch_unit
 
             // Adjust fill_level if both consuming and filling this cycle
             if (consume_valid && consume_count > 0 && fstate == FS_WAIT && bus_valid) begin
-                fill_level <= fill_level - consume_count[4:0] + BUS_BYTES[4:0];
+                if (BUS_BYTES == 2 && fetch_addr[0])
+                    fill_level <= fill_level - consume_count[4:0] + 5'd1;
+                else
+                    fill_level <= fill_level - consume_count[4:0] + BUS_BYTES[4:0];
             end
         end
     end

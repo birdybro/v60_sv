@@ -323,12 +323,66 @@ static int exec_fmt1_alu(V60State& s, uint8_t opcode, AluType atype, int dsize) 
 }
 
 // =========================================================================
+// Bcc condition evaluator — matches v60_flags.sv
+// =========================================================================
+static bool eval_cond(uint32_t psw, int cond) {
+    bool z  = (psw >> 0) & 1;
+    bool s_ = (psw >> 1) & 1;
+    bool ov = (psw >> 2) & 1;
+    bool cy = (psw >> 3) & 1;
+
+    switch (cond & 0xF) {
+        case 0x0: return ov;              // BV
+        case 0x1: return !ov;             // BNV
+        case 0x2: return cy;              // BL/BC
+        case 0x3: return !cy;             // BNL/BNC
+        case 0x4: return z;               // BE/BZ
+        case 0x5: return !z;              // BNE/BNZ
+        case 0x6: return cy || z;         // BNH
+        case 0x7: return !cy && !z;       // BH
+        case 0x8: return s_;              // BN
+        case 0x9: return !s_;             // BP
+        case 0xA: return true;            // BR (always)
+        case 0xB: return false;           // NOP (never)
+        case 0xC: return s_ ^ ov;         // BLT
+        case 0xD: return !(s_ ^ ov);      // BGE
+        case 0xE: return (s_ ^ ov) || z;  // BLE
+        case 0xF: return !((s_ ^ ov) || z); // BGT
+        default:  return false;
+    }
+}
+
+// =========================================================================
 // Minimal V60 executor (placeholder until real MAME source is integrated)
-// Phase 3: Handles NOP, HALT, BR, MOV, ADD, SUB, CMP, AND, OR, XOR,
-//          ADDC, SUBC, NOT, NEG, GETPSW, INC, DEC
+// Phase 4: Handles NOP, HALT, Bcc (all 14 conditions), MOV, ADD, SUB, CMP,
+//          AND, OR, XOR, ADDC, SUBC, NOT, NEG, GETPSW, INC, DEC
 // =========================================================================
 static bool execute_one(V60State& s) {
     uint8_t opcode = s.program->read_byte(s.pc);
+
+    // Bcc short (0x60-0x6F): 2 bytes, 8-bit signed displacement
+    if ((opcode & 0xF0) == 0x60) {
+        int cond = opcode & 0x0F;
+        if (eval_cond(s.psw, cond)) {
+            int8_t disp = (int8_t)s.program->read_byte(s.pc + 1);
+            s.pc = s.pc + (int32_t)disp;
+        } else {
+            s.pc += 2;  // Not taken: skip opcode + disp8
+        }
+        return true;
+    }
+
+    // Bcc long (0x70-0x7F): 3 bytes, 16-bit signed displacement
+    if ((opcode & 0xF0) == 0x70) {
+        int cond = opcode & 0x0F;
+        if (eval_cond(s.psw, cond)) {
+            int16_t disp = (int16_t)s.program->read_word(s.pc + 1);
+            s.pc = s.pc + (int32_t)disp;
+        } else {
+            s.pc += 3;  // Not taken: skip opcode + disp16
+        }
+        return true;
+    }
 
     switch (opcode) {
         case 0xCD: // NOP
@@ -339,18 +393,6 @@ static bool execute_one(V60State& s) {
             s.halted = true;
             s.pc += 1;
             return true;
-
-        case 0x6A: { // BR (unconditional, 8-bit displacement)
-            int8_t disp = (int8_t)s.program->read_byte(s.pc + 1);
-            s.pc = s.pc + (int32_t)disp;
-            return true;
-        }
-
-        case 0x7A: { // BR (unconditional, 16-bit displacement)
-            int16_t disp = (int16_t)s.program->read_word(s.pc + 1);
-            s.pc = s.pc + (int32_t)disp;
-            return true;
-        }
 
         case 0x09:   // MOV.B
         case 0x1B:   // MOV.H
