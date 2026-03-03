@@ -104,8 +104,8 @@ DPI-exported functions (`get_pc`, `get_psw`, `get_gpr`, `mem_write_byte`, etc.) 
 ## Implementation Phases
 
 - **Phase 1** ✅ — Infrastructure: NOP, HALT, BR execution; build system; MAME harness
-- **Phase 2** — Register ops & immediate MOV (MOVB/H/W, GETPSW)
-- **Phase 3** — Core ALU (ADD, SUB, CMP, AND, OR, XOR, NOT, NEG, INC, DEC)
+- **Phase 2** ✅ — Register ops & immediate MOV (MOVB/H/W, GETPSW)
+- **Phase 3** ✅ — Core ALU (ADD, SUB, CMP, AND, OR, XOR, NOT, NEG, INC, DEC, ADDC, SUBC)
 - **Phase 4** — Conditional branches (all 14 Bcc conditions)
 - **Phase 5** — All 21 addressing modes
 - **Phase 6** — Control flow (JMP, JSR, RET, CALL, PREPARE/DISPOSE, PUSH/POP)

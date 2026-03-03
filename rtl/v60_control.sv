@@ -1,8 +1,9 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 // v60_control.sv — Main FSM controller
-// Phase 1: RESET → FETCH → DECODE → EXECUTE → WRITEBACK → FETCH
-// Handles NOP, HALT, and Bcc/BR instructions
+// Phase 3: RESET → FETCH → DECODE → EXECUTE → WRITEBACK → FETCH
+// Handles NOP, HALT, Bcc/BR, MOV, ADD, SUB, CMP, AND, OR, XOR, ADDC, SUBC,
+// NOT, NEG, GETPSW, INC, DEC
 
 module v60_control
     import v60_pkg::*;
@@ -270,6 +271,72 @@ module v60_control
                             // Flush fetch buffer for new PC
                             fetch_flush      = 1'b1;
                             fetch_flush_addr = pc + inst_r.imm_value;
+                        end
+                    end
+
+                    FMT_I: begin
+                        // Two-operand instructions (MOV, ADD, SUB, etc.)
+                        // Phase 2: register and immediate source → register destination
+
+                        // Read source register (used if am_src == AM_REGISTER)
+                        rf_rd_addr_a = inst_r.reg_src;
+
+                        // Determine source operand value
+                        case (inst_r.am_src)
+                            AM_REGISTER:  alu_a = rf_rd_data_a;
+                            AM_IMMEDIATE: alu_a = inst_r.imm_value;
+                            AM_IMM_QUICK: alu_a = inst_r.imm_value;
+                            default:      alu_a = 32'h0;
+                        endcase
+
+                        // Read destination register (for read-modify-write ops like ADD)
+                        rf_rd_addr_b = inst_r.reg_dst;
+                        alu_b        = rf_rd_data_b;
+
+                        alu_op       = inst_r.alu_op;
+                        alu_size     = inst_r.data_size;
+                        alu_carry_in = psw[PSW_CY];
+
+                        // Write result to destination register (skip for CMP — flags only)
+                        if (inst_r.am_dst == AM_REGISTER && inst_r.alu_op != ALU_CMP) begin
+                            rf_wr_en   = 1'b1;
+                            rf_wr_addr = inst_r.reg_dst;
+                            rf_wr_data = alu_result;
+                        end
+
+                        // Update condition codes if instruction modifies flags
+                        if (inst_r.writes_flags) begin
+                            psw_cc_wr_en   = 1'b1;
+                            psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                        end
+                    end
+
+                    FMT_III: begin
+                        // Single-operand instructions
+                        if (inst_r.is_getpsw) begin
+                            // GETPSW: write PSW value to destination register
+                            if (inst_r.am_dst == AM_REGISTER) begin
+                                rf_wr_en   = 1'b1;
+                                rf_wr_addr = inst_r.reg_dst;
+                                rf_wr_data = psw;
+                            end
+                        end else if (inst_r.alu_op == ALU_INC || inst_r.alu_op == ALU_DEC) begin
+                            // INC/DEC: read-modify-write on destination
+                            rf_rd_addr_a = inst_r.reg_dst;
+                            alu_a        = rf_rd_data_a;
+                            alu_op       = inst_r.alu_op;
+                            alu_size     = inst_r.data_size;
+
+                            // Write result back
+                            if (inst_r.am_dst == AM_REGISTER) begin
+                                rf_wr_en   = 1'b1;
+                                rf_wr_addr = inst_r.reg_dst;
+                                rf_wr_data = alu_result;
+                            end
+
+                            // Update flags
+                            psw_cc_wr_en   = 1'b1;
+                            psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
                         end
                     end
 

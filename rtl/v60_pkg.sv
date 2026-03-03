@@ -210,43 +210,89 @@ package v60_pkg;
     localparam logic [3:0] CC_BGT  = 4'hF;
 
     // =========================================================================
-    // Key opcodes
+    // Key opcodes (verified against MAME optable.hxx)
     // =========================================================================
     localparam logic [7:0] OP_HALT    = 8'h00;
     localparam logic [7:0] OP_NOP     = 8'hCD;
-    localparam logic [7:0] OP_RET     = 8'hBF;
-    localparam logic [7:0] OP_RSR     = 8'h9F;
-    localparam logic [7:0] OP_GETPSW  = 8'hCC;
-    localparam logic [7:0] OP_TRAP    = 8'hE1;
-    localparam logic [7:0] OP_RETIU   = 8'hE7;
-    localparam logic [7:0] OP_RETIS   = 8'hE6;
+    localparam logic [7:0] OP_RSR     = 8'hCA;
+    localparam logic [7:0] OP_BRK     = 8'hC8;
+    localparam logic [7:0] OP_BRKV    = 8'hC9;
+    localparam logic [7:0] OP_TRAPFL  = 8'hCB;
+    localparam logic [7:0] OP_DISPOSE = 8'hCC;
+    localparam logic [7:0] OP_BSR     = 8'h48;
+    localparam logic [7:0] OP_CALL    = 8'h49;
+
+    // Format III opcodes (LSB = m bit, pairs of consecutive opcodes)
+    localparam logic [7:0] OP_GETPSW_0 = 8'hF6;
+    localparam logic [7:0] OP_GETPSW_1 = 8'hF7;
+    localparam logic [7:0] OP_RET_0    = 8'hE2;
+    localparam logic [7:0] OP_RET_1    = 8'hE3;
+    localparam logic [7:0] OP_TRAP_0   = 8'hF8;
+    localparam logic [7:0] OP_TRAP_1   = 8'hF9;
+    localparam logic [7:0] OP_RETIU_0  = 8'hEA;
+    localparam logic [7:0] OP_RETIU_1  = 8'hEB;
+    localparam logic [7:0] OP_RETIS_0  = 8'hFA;
+    localparam logic [7:0] OP_RETIS_1  = 8'hFB;
+    localparam logic [7:0] OP_JMP_0    = 8'hD6;
+    localparam logic [7:0] OP_JMP_1    = 8'hD7;
 
     // Branch opcode nibble identification
     localparam logic [3:0] OP_BCC_SHORT_HI = 4'h6;
     localparam logic [3:0] OP_BCC_LONG_HI  = 4'h7;
 
-    // Format I opcodes
-    localparam logic [7:0] OP_MOV_B   = 8'h88;
-    localparam logic [7:0] OP_MOV_H   = 8'h89;
-    localparam logic [7:0] OP_MOV_W   = 8'h8B;
+    // Format I opcodes (two-operand, verified against MAME optable.hxx)
+    // MOV family (0x09, 0x1B, 0x2D)
+    localparam logic [7:0] OP_MOV_B   = 8'h09;
+    localparam logic [7:0] OP_MOV_H   = 8'h1B;
+    localparam logic [7:0] OP_MOV_W   = 8'h2D;
+    // ALU ops: base + 0=byte, +2=half, +4=word
     localparam logic [7:0] OP_ADD_B   = 8'h80;
-    localparam logic [7:0] OP_ADD_H   = 8'h81;
-    localparam logic [7:0] OP_ADD_W   = 8'h83;
-    localparam logic [7:0] OP_SUB_B   = 8'h98;
-    localparam logic [7:0] OP_SUB_H   = 8'h99;
-    localparam logic [7:0] OP_SUB_W   = 8'h9B;
-    localparam logic [7:0] OP_CMP_B   = 8'hA0;
-    localparam logic [7:0] OP_CMP_H   = 8'hA1;
-    localparam logic [7:0] OP_CMP_W   = 8'hA3;
-    localparam logic [7:0] OP_AND_B   = 8'h90;
-    localparam logic [7:0] OP_AND_H   = 8'h91;
-    localparam logic [7:0] OP_AND_W   = 8'h93;
-    localparam logic [7:0] OP_OR_B    = 8'h94;
-    localparam logic [7:0] OP_OR_H    = 8'h95;
-    localparam logic [7:0] OP_OR_W    = 8'h97;
-    localparam logic [7:0] OP_XOR_B   = 8'h84;
-    localparam logic [7:0] OP_XOR_H   = 8'h85;
-    localparam logic [7:0] OP_XOR_W   = 8'h87;
+    localparam logic [7:0] OP_ADD_H   = 8'h82;
+    localparam logic [7:0] OP_ADD_W   = 8'h84;
+    localparam logic [7:0] OP_MUL_B   = 8'h81;
+    localparam logic [7:0] OP_MUL_H   = 8'h83;
+    localparam logic [7:0] OP_MUL_W   = 8'h85;
+    localparam logic [7:0] OP_OR_B    = 8'h88;
+    localparam logic [7:0] OP_OR_H    = 8'h8A;
+    localparam logic [7:0] OP_OR_W    = 8'h8C;
+    localparam logic [7:0] OP_ADDC_B  = 8'h90;
+    localparam logic [7:0] OP_ADDC_H  = 8'h92;
+    localparam logic [7:0] OP_ADDC_W  = 8'h94;
+    localparam logic [7:0] OP_SUBC_B  = 8'h98;
+    localparam logic [7:0] OP_SUBC_H  = 8'h9A;
+    localparam logic [7:0] OP_SUBC_W  = 8'h9C;
+    localparam logic [7:0] OP_AND_B   = 8'hA0;
+    localparam logic [7:0] OP_AND_H   = 8'hA2;
+    localparam logic [7:0] OP_AND_W   = 8'hA4;
+    localparam logic [7:0] OP_SUB_B   = 8'hA8;
+    localparam logic [7:0] OP_SUB_H   = 8'hAA;
+    localparam logic [7:0] OP_SUB_W   = 8'hAC;
+    localparam logic [7:0] OP_XOR_B   = 8'hB0;
+    localparam logic [7:0] OP_XOR_H   = 8'hB2;
+    localparam logic [7:0] OP_XOR_W   = 8'hB4;
+    localparam logic [7:0] OP_CMP_B   = 8'hB8;
+    localparam logic [7:0] OP_CMP_H   = 8'hBA;
+    localparam logic [7:0] OP_CMP_W   = 8'hBC;
+    // NOT/NEG (Format I, 0x38-0x3D)
+    localparam logic [7:0] OP_NOT_B   = 8'h38;
+    localparam logic [7:0] OP_NOT_H   = 8'h3A;
+    localparam logic [7:0] OP_NOT_W   = 8'h3C;
+    localparam logic [7:0] OP_NEG_B   = 8'h39;
+    localparam logic [7:0] OP_NEG_H   = 8'h3B;
+    localparam logic [7:0] OP_NEG_W   = 8'h3D;
+    // INC/DEC (Format III, opcode LSB = m bit)
+    localparam logic [7:0] OP_DEC_B_0 = 8'hD0;
+    localparam logic [7:0] OP_DEC_B_1 = 8'hD1;
+    localparam logic [7:0] OP_DEC_H_0 = 8'hD2;
+    localparam logic [7:0] OP_DEC_H_1 = 8'hD3;
+    localparam logic [7:0] OP_DEC_W_0 = 8'hD4;
+    localparam logic [7:0] OP_DEC_W_1 = 8'hD5;
+    localparam logic [7:0] OP_INC_B_0 = 8'hD8;
+    localparam logic [7:0] OP_INC_B_1 = 8'hD9;
+    localparam logic [7:0] OP_INC_H_0 = 8'hDA;
+    localparam logic [7:0] OP_INC_H_1 = 8'hDB;
+    localparam logic [7:0] OP_INC_W_0 = 8'hDC;
+    localparam logic [7:0] OP_INC_W_1 = 8'hDD;
 
     // =========================================================================
     // Reset vector address
@@ -261,6 +307,16 @@ package v60_pkg;
     localparam int FETCH_WINDOW = 8;
 
     // =========================================================================
+    // Addressing mode encoding (mod field, byte after opcode in Format I/III)
+    // Dispatch: s_AMTable[m][mod_byte>>5]
+    // m=0: 0=Disp8, 1=Disp16, 2=Disp32, 3=RegIndirect, 4=DispInd8, 5=DispInd16, 6=DispInd32, 7=Group7
+    // m=1: 0=DblDisp8, 1=DblDisp16, 2=DblDisp32, 3=Register, 4=AutoInc, 5=AutoDec, 6=Group6, 7=Error
+    // Group7 (m=0, mod>>5=7): mod[4:0]=0-15: ImmQuick, 16:PCDisp8, 17:PCDisp16, 18:PCDisp32,
+    //   19:DirectAddr, 20:Immediate, 24:PCDispInd8, ...
+    // =========================================================================
+    localparam logic [7:0] MOD_IMMEDIATE = 8'hF4;
+
+    // =========================================================================
     // Decoded instruction bundle
     // =========================================================================
     typedef struct packed {
@@ -268,19 +324,20 @@ package v60_pkg;
         inst_format_t   format;
         alu_op_t        alu_op;
         data_size_t     data_size;
-        logic [4:0]     reg_src;
-        logic [4:0]     reg_dst;
-        addr_mode_t     am_src;
-        addr_mode_t     am_dst;
-        logic           dir;
+        logic [4:0]     reg_src;      // Source register (for Format I reg field when d=0, or mod field)
+        logic [4:0]     reg_dst;      // Dest register (for Format I reg field when d=1, or mod field)
+        addr_mode_t     am_src;       // Source addressing mode
+        addr_mode_t     am_dst;       // Destination addressing mode
+        logic           dir;          // Format I direction: 0=reg is src, 1=reg is dst
         logic [4:0]     subop;
         logic [3:0]     cond;
         logic           is_branch;
-        logic           is_bsr;
         logic           is_halt;
         logic           is_nop;
+        logic           is_getpsw;
+        logic           writes_flags; // Instruction updates PSW condition codes
         logic           is_privileged;
-        logic [31:0]    imm_value;
+        logic [31:0]    imm_value;    // Immediate operand or displacement
         logic [5:0]     inst_len;
     } decoded_inst_t;
 
