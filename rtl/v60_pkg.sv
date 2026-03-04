@@ -128,6 +128,8 @@ package v60_pkg;
         ALU_CLR1  = 5'd24,
         ALU_NOT1  = 5'd25,
         ALU_TEST1 = 5'd26,
+        ALU_RVBIT  = 5'd27,
+        ALU_RVBYT  = 5'd28,
         ALU_NOP   = 5'd31
     } alu_op_t;
 
@@ -231,6 +233,24 @@ package v60_pkg;
         CF_PUSHM   = 4'd9,
         CF_POPM    = 4'd10
     } ctrl_flow_t;
+
+    // =========================================================================
+    // System/utility instruction type
+    // =========================================================================
+    typedef enum logic [3:0] {
+        SYS_NONE   = 4'd0,
+        SYS_MOVSB  = 4'd1,   // Sign-extend byte
+        SYS_MOVZB  = 4'd2,   // Zero-extend byte
+        SYS_MOVSH  = 4'd3,   // Sign-extend half
+        SYS_MOVZH  = 4'd4,   // Zero-extend half
+        SYS_MOVT   = 4'd5,   // Truncate with OV
+        SYS_MOVEA  = 4'd6,   // Move effective address
+        SYS_SETF   = 4'd7,   // Set byte from condition
+        SYS_UPDPSW = 4'd8,   // Update PSW
+        SYS_LDPR   = 4'd9,   // Load privileged register
+        SYS_STPR   = 4'd10,  // Store privileged register
+        SYS_TASI   = 4'd11   // Test and set
+    } sys_op_t;
 
     // =========================================================================
     // Key opcodes (verified against MAME optable.hxx)
@@ -349,6 +369,29 @@ package v60_pkg;
     localparam logic [7:0] OP_SET1   = 8'h97;
     localparam logic [7:0] OP_CLR1   = 8'hA7;
     localparam logic [7:0] OP_NOT1   = 8'hB7;
+    // Phase 8: Cross-size MOV
+    localparam logic [7:0] OP_RVBIT     = 8'h08;
+    localparam logic [7:0] OP_MOVSBH    = 8'h0A;
+    localparam logic [7:0] OP_MOVZBH    = 8'h0B;
+    localparam logic [7:0] OP_MOVSBW    = 8'h0C;
+    localparam logic [7:0] OP_MOVZBW    = 8'h0D;
+    localparam logic [7:0] OP_STPR      = 8'h02;
+    localparam logic [7:0] OP_LDPR      = 8'h12;
+    localparam logic [7:0] OP_UPDPSWW   = 8'h13;
+    localparam logic [7:0] OP_MOVTHB    = 8'h19;
+    localparam logic [7:0] OP_MOVSHW    = 8'h1C;
+    localparam logic [7:0] OP_MOVZHW    = 8'h1D;
+    localparam logic [7:0] OP_MOVTWB    = 8'h29;
+    localparam logic [7:0] OP_MOVTWH    = 8'h2B;
+    localparam logic [7:0] OP_RVBYT     = 8'h2C;
+    localparam logic [7:0] OP_MOVEAB    = 8'h40;
+    localparam logic [7:0] OP_MOVEAH    = 8'h42;
+    localparam logic [7:0] OP_MOVEAW    = 8'h44;
+    localparam logic [7:0] OP_SETF      = 8'h47;
+    localparam logic [7:0] OP_UPDPSWH   = 8'h4A;
+    // Phase 8: TASI (Format III, opcode LSB = m bit)
+    localparam logic [7:0] OP_TASI_0    = 8'hE0;
+    localparam logic [7:0] OP_TASI_1    = 8'hE1;
     // INC/DEC (Format III, opcode LSB = m bit)
     localparam logic [7:0] OP_DEC_B_0 = 8'hD0;
     localparam logic [7:0] OP_DEC_B_1 = 8'hD1;
@@ -416,6 +459,8 @@ package v60_pkg;
         logic [31:0]    imm_value2;   // Second displacement (DblDisp/PCDblDisp modes)
         ctrl_flow_t     ctrl_flow;    // Control flow instruction type
         logic           src_is_byte;  // Source operand always byte (shift/rotate count)
+        data_size_t     dst_size;     // Destination dimension (cross-size MOV)
+        sys_op_t        sys_op;       // System operation type
     } decoded_inst_t;
 
 endpackage

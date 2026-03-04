@@ -41,6 +41,7 @@ module v60_cpu
     logic        rf_wr_en;
     logic [4:0]  rf_wr_addr;
     logic [31:0] rf_wr_data;
+    data_size_t  rf_wr_size;
     logic        pc_wr_en;
     logic [31:0] pc_wr_data, pc;
     logic        psw_wr_en;
@@ -153,9 +154,6 @@ module v60_cpu
     assign fetch_bus_busy = bus_if_busy || data_bus_active;
 
     // Tie off unused signals
-    assign preg_wr_en   = 1'b0;
-    assign preg_addr    = 5'd0;
-    assign preg_wr_data = 32'h0;
     assign int_ack      = 1'b0;
 
     // =========================================================================
@@ -174,6 +172,7 @@ module v60_cpu
         .wr_en          (rf_wr_en),
         .wr_addr        (rf_wr_addr),
         .wr_data        (rf_wr_data),
+        .wr_size        (rf_wr_size),
         .pc_wr_en       (pc_wr_en),
         .pc_wr_data     (pc_wr_data),
         .pc             (pc),
@@ -286,6 +285,7 @@ module v60_cpu
         .rf_wr_en            (rf_wr_en),
         .rf_wr_addr          (rf_wr_addr),
         .rf_wr_data          (rf_wr_data),
+        .rf_wr_size          (rf_wr_size),
         .pc_wr_en            (pc_wr_en),
         .pc_wr_data          (pc_wr_data),
         .pc                  (pc),
@@ -311,6 +311,10 @@ module v60_cpu
         .alu_flag_cy         (alu_flag_cy),
         .flags_cond          (flags_cond),
         .flags_cond_met      (flags_cond_met),
+        .preg_wr_en          (preg_wr_en),
+        .preg_addr           (preg_addr),
+        .preg_wr_data        (preg_wr_data),
+        .preg_rd_data        (preg_rd_data),
         .data_bus_req        (data_bus_req),
         .data_bus_addr       (data_bus_addr),
         .data_bus_size       (data_bus_size),

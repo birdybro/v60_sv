@@ -119,7 +119,7 @@ DPI-exported functions (`get_pc`, `get_psw`, `get_gpr`, `mem_write_byte`, etc.) 
 - **Phase 5B** ✅ — Indirect + double displacement addressing modes (DispInd, DblDisp, PCDispInd, DirectAddrDeferred, PCDblDisp)
 - **Phase 6** ✅ — Control flow (JMP, JSR, BSR, RET, PREPARE/DISPOSE, PUSH/POP, PUSHM/POPM)
 - **Phase 7** ✅ — Multiply, divide, shifts, rotates, bit ops (MUL/MULU, DIV/DIVU, REM/REMU, SHL, SHA, ROT, ROTC, SET1/CLR1/NOT1/TEST1)
-- **Phase 8** — System instructions & I/O
+- **Phase 8** ✅ — System/utility instructions (cross-size MOV, MOVEA, RVBIT/RVBYT, SETF, UPDPSW, LDPR/STPR, TASI)
 - **Phase 9** — Interrupts & exceptions
 - **Phase 10** — Decrement-and-branch
 - **Phase 11** — Floating point

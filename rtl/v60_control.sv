@@ -1,7 +1,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 // v60_control.sv — Main FSM controller
-// Phase 7: Multiply, divide, shifts, rotates, bit ops
+// Phase 8: System/utility instructions
 
 module v60_control
     import v60_pkg::*;
@@ -23,6 +23,7 @@ module v60_control
     output logic        rf_wr_en,
     output logic [4:0]  rf_wr_addr,
     output logic [31:0] rf_wr_data,
+    output data_size_t  rf_wr_size,
 
     // PC
     output logic        pc_wr_en,
@@ -67,6 +68,12 @@ module v60_control
     input  logic [31:0] data_bus_rdata,
     input  logic        data_bus_valid,
     input  logic        data_bus_busy,
+
+    // Privileged register interface
+    output logic        preg_wr_en,
+    output logic [4:0]  preg_addr,
+    output logic [31:0] preg_wr_data,
+    input  logic [31:0] preg_rd_data,
 
     // Interrupt interface
     input  logic        int_pending,
@@ -217,9 +224,75 @@ module v60_control
                                 AM_IMM_QUICK: begin temp_data <= inst_r.imm_value; temp_src <= inst_r.imm_value; end
                                 default:      begin temp_data <= rf_rd_data_b; temp_src <= rf_rd_data_b; end
                             endcase
+                        end else if (inst_r.is_mem_dst && inst_r.alu_op == ALU_RVBIT) begin
+                            temp_data <= {24'h0, rf_rd_data_b[0], rf_rd_data_b[1], rf_rd_data_b[2], rf_rd_data_b[3],
+                                                 rf_rd_data_b[4], rf_rd_data_b[5], rf_rd_data_b[6], rf_rd_data_b[7]};
+                            temp_src  <= rf_rd_data_b;
+                        end else if (inst_r.is_mem_dst && inst_r.alu_op == ALU_RVBYT) begin
+                            temp_data <= {rf_rd_data_b[7:0], rf_rd_data_b[15:8], rf_rd_data_b[23:16], rf_rd_data_b[31:24]};
+                            temp_src  <= rf_rd_data_b;
                         end
 
-                        if (inst_r.is_mem_dst && inst_r.alu_op != ALU_MOV && inst_r.alu_op != ALU_CMP && inst_r.alu_op != ALU_TEST1)
+                        // Cross-size MOV / sys ops writing to memory: compute result here
+                        if (inst_r.is_mem_dst && inst_r.sys_op != SYS_NONE &&
+                            inst_r.sys_op != SYS_TASI && inst_r.sys_op != SYS_UPDPSW &&
+                            inst_r.sys_op != SYS_LDPR) begin
+                            case (inst_r.am_src)
+                                AM_REGISTER:  temp_src <= rf_rd_data_b;
+                                AM_IMMEDIATE: temp_src <= inst_r.imm_value;
+                                AM_IMM_QUICK: temp_src <= inst_r.imm_value;
+                                default:      temp_src <= rf_rd_data_b;
+                            endcase
+                            // Compute the converted value for direct write
+                            case (inst_r.sys_op)
+                                SYS_MOVSB: begin
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  temp_data <= {{24{rf_rd_data_b[7]}}, rf_rd_data_b[7:0]};
+                                        AM_IMMEDIATE: temp_data <= {{24{inst_r.imm_value[7]}}, inst_r.imm_value[7:0]};
+                                        default:      temp_data <= {{24{rf_rd_data_b[7]}}, rf_rd_data_b[7:0]};
+                                    endcase
+                                end
+                                SYS_MOVZB: begin
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  temp_data <= {24'h0, rf_rd_data_b[7:0]};
+                                        AM_IMMEDIATE: temp_data <= {24'h0, inst_r.imm_value[7:0]};
+                                        default:      temp_data <= {24'h0, rf_rd_data_b[7:0]};
+                                    endcase
+                                end
+                                SYS_MOVSH: begin
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  temp_data <= {{16{rf_rd_data_b[15]}}, rf_rd_data_b[15:0]};
+                                        AM_IMMEDIATE: temp_data <= {{16{inst_r.imm_value[15]}}, inst_r.imm_value[15:0]};
+                                        default:      temp_data <= {{16{rf_rd_data_b[15]}}, rf_rd_data_b[15:0]};
+                                    endcase
+                                end
+                                SYS_MOVZH: begin
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  temp_data <= {16'h0, rf_rd_data_b[15:0]};
+                                        AM_IMMEDIATE: temp_data <= {16'h0, inst_r.imm_value[15:0]};
+                                        default:      temp_data <= {16'h0, rf_rd_data_b[15:0]};
+                                    endcase
+                                end
+                                SYS_MOVT: begin
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  temp_data <= rf_rd_data_b;
+                                        AM_IMMEDIATE: temp_data <= inst_r.imm_value;
+                                        default:      temp_data <= rf_rd_data_b;
+                                    endcase
+                                    // Truncation happens naturally in write via dst_size
+                                end
+                                default: begin
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  temp_data <= rf_rd_data_b;
+                                        AM_IMMEDIATE: temp_data <= inst_r.imm_value;
+                                        default:      temp_data <= rf_rd_data_b;
+                                    endcase
+                                end
+                            endcase
+                        end
+
+                        if (inst_r.is_mem_dst && inst_r.alu_op != ALU_MOV && inst_r.alu_op != ALU_CMP && inst_r.alu_op != ALU_TEST1
+                            && inst_r.sys_op == SYS_NONE)
                             needs_mem_write <= 1'b1;
                         else
                             needs_mem_write <= 1'b0;
@@ -328,7 +401,10 @@ module v60_control
                         if (inst_r.is_mem_dst && inst_r.alu_op == ALU_MOV)
                             temp_data <= temp_src;
                     end else if (needs_mem_write) begin
-                        temp_data <= alu_result;
+                        if (inst_r.sys_op == SYS_TASI)
+                            temp_data <= 32'h000000FF;
+                        else
+                            temp_data <= alu_result;
                     end
                 end else if (inst_r.ctrl_flow == CF_JMP) begin
                     if (indirect_active) begin
@@ -480,11 +556,22 @@ module v60_control
                     CF_POPM: next_state = ST_EXECUTE2; // start bitmap scan
 
                     default: begin
+                        // MOVEA with non-indirect memory source: address is already computed
+                        if (inst_r.sys_op == SYS_MOVEA && inst_r.is_mem_src && !inst_r.needs_indirect)
+                            next_state = ST_WRITEBACK;
+                        // TASI Format III: register path goes straight to writeback
+                        else if (inst_r.sys_op == SYS_TASI && !inst_r.is_mem_dst)
+                            next_state = ST_WRITEBACK;
+                        // TASI Format III with memory: need to read byte first
+                        else if (inst_r.sys_op == SYS_TASI && inst_r.is_mem_dst)
+                            next_state = ST_MEM_READ;
                         // Original Phase 5 logic
-                        if (inst_r.is_mem_src) begin
+                        else if (inst_r.is_mem_src) begin
                             next_state = ST_MEM_READ;
                         end else if (inst_r.is_mem_dst) begin
-                            if (inst_r.alu_op == ALU_MOV && !inst_r.needs_indirect)
+                            // Cross-size MOV/RVBIT/RVBYT to mem: direct write (like MOV)
+                            if ((inst_r.alu_op == ALU_MOV || inst_r.alu_op == ALU_RVBIT || inst_r.alu_op == ALU_RVBYT ||
+                                 inst_r.sys_op != SYS_NONE) && !inst_r.needs_indirect)
                                 next_state = ST_MEM_WRITE;
                             else
                                 next_state = ST_MEM_READ;
@@ -615,6 +702,7 @@ module v60_control
         rf_wr_en          = 1'b0;
         rf_wr_addr        = 5'd0;
         rf_wr_data        = 32'h0;
+        rf_wr_size        = SZ_WORD;
         rf_rd_addr_a      = 5'd0;
         rf_rd_addr_b      = 5'd0;
         pc_wr_en          = 1'b0;
@@ -637,6 +725,9 @@ module v60_control
         data_bus_addr     = 32'h0;
         data_bus_size     = SZ_WORD;
         data_bus_wdata    = 32'h0;
+        preg_wr_en        = 1'b0;
+        preg_addr         = 5'd0;
+        preg_wr_data      = 32'h0;
 
         case (state)
             ST_RESET: begin
@@ -761,6 +852,153 @@ module v60_control
                                         rf_wr_addr = inst_r.is_mem_src ? inst_r.reg_src : inst_r.reg_dst;
                                         rf_wr_data = eff_addr_comb;
                                     end
+
+                                    // MOVEA non-indirect mem source: address is the result
+                                    if (inst_r.sys_op == SYS_MOVEA && inst_r.is_mem_src && !inst_r.needs_indirect) begin
+                                        rf_wr_en   = 1'b1;
+                                        rf_wr_addr = inst_r.reg_dst;
+                                        rf_wr_data = eff_addr_comb;
+                                    end
+                                end else if (inst_r.sys_op != SYS_NONE) begin
+                                    // Phase 8: sys_op register-register dispatch
+                                    rf_rd_addr_a = inst_r.reg_src;
+                                    rf_rd_addr_b = inst_r.reg_dst;
+                                    rf_wr_size   = inst_r.dst_size;
+
+                                    case (inst_r.sys_op)
+                                        SYS_MOVSB: begin
+                                            // Sign-extend byte
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  rf_wr_data = {{24{rf_rd_data_a[7]}}, rf_rd_data_a[7:0]};
+                                                AM_IMMEDIATE: rf_wr_data = {{24{inst_r.imm_value[7]}}, inst_r.imm_value[7:0]};
+                                                AM_IMM_QUICK: rf_wr_data = {{24{inst_r.imm_value[7]}}, inst_r.imm_value[7:0]};
+                                                default:      rf_wr_data = {{24{rf_rd_data_a[7]}}, rf_rd_data_a[7:0]};
+                                            endcase
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                        end
+                                        SYS_MOVZB: begin
+                                            // Zero-extend byte
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  rf_wr_data = {24'h0, rf_rd_data_a[7:0]};
+                                                AM_IMMEDIATE: rf_wr_data = {24'h0, inst_r.imm_value[7:0]};
+                                                AM_IMM_QUICK: rf_wr_data = {24'h0, inst_r.imm_value[7:0]};
+                                                default:      rf_wr_data = {24'h0, rf_rd_data_a[7:0]};
+                                            endcase
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                        end
+                                        SYS_MOVSH: begin
+                                            // Sign-extend half
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  rf_wr_data = {{16{rf_rd_data_a[15]}}, rf_rd_data_a[15:0]};
+                                                AM_IMMEDIATE: rf_wr_data = {{16{inst_r.imm_value[15]}}, inst_r.imm_value[15:0]};
+                                                default:      rf_wr_data = {{16{rf_rd_data_a[15]}}, rf_rd_data_a[15:0]};
+                                            endcase
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                        end
+                                        SYS_MOVZH: begin
+                                            // Zero-extend half
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  rf_wr_data = {16'h0, rf_rd_data_a[15:0]};
+                                                AM_IMMEDIATE: rf_wr_data = {16'h0, inst_r.imm_value[15:0]};
+                                                default:      rf_wr_data = {16'h0, rf_rd_data_a[15:0]};
+                                            endcase
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                        end
+                                        SYS_MOVT: begin
+                                            // Truncate with OV detection
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  alu_a = rf_rd_data_a;
+                                                AM_IMMEDIATE: alu_a = inst_r.imm_value;
+                                                default:      alu_a = rf_rd_data_a;
+                                            endcase
+                                            // Compute truncated result and OV
+                                            if (inst_r.dst_size == SZ_BYTE) begin
+                                                rf_wr_data = {24'h0, alu_a[7:0]};
+                                                // OV=1 if high bits don't match sign extension
+                                                if (inst_r.data_size == SZ_HALF) // MOVTHB
+                                                    psw_cc_wr_data[2] = (alu_a[7] ? (alu_a[15:8] != 8'hFF) : (alu_a[15:8] != 8'h00));
+                                                else // MOVTWB
+                                                    psw_cc_wr_data[2] = (alu_a[7] ? (alu_a[31:8] != 24'hFFFFFF) : (alu_a[31:8] != 24'h000000));
+                                            end else begin // SZ_HALF (MOVTWH)
+                                                rf_wr_data = {16'h0, alu_a[15:0]};
+                                                psw_cc_wr_data[2] = (alu_a[15] ? (alu_a[31:16] != 16'hFFFF) : (alu_a[31:16] != 16'h0000));
+                                            end
+                                            // Preserve Z, S, CY from current PSW
+                                            psw_cc_wr_data[0] = psw[PSW_Z];
+                                            psw_cc_wr_data[1] = psw[PSW_S];
+                                            psw_cc_wr_data[3] = psw[PSW_CY];
+                                            psw_cc_wr_en = 1'b1;
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                        end
+                                        SYS_MOVEA: begin
+                                            // Register source: return register index, not value
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  rf_wr_data = {27'h0, inst_r.reg_src};
+                                                AM_IMMEDIATE: rf_wr_data = inst_r.imm_value;
+                                                AM_IMM_QUICK: rf_wr_data = inst_r.imm_value;
+                                                default:      rf_wr_data = {27'h0, inst_r.reg_src};
+                                            endcase
+                                        end
+                                        SYS_SETF: begin
+                                            // Source byte gives condition code 0-15
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  flags_cond = rf_rd_data_a[3:0];
+                                                AM_IMMEDIATE: flags_cond = inst_r.imm_value[3:0];
+                                                AM_IMM_QUICK: flags_cond = inst_r.imm_value[3:0];
+                                                default:      flags_cond = rf_rd_data_a[3:0];
+                                            endcase
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                            rf_wr_data = {31'h0, flags_cond_met};
+                                        end
+                                        SYS_UPDPSW: begin
+                                            // op1=value (src), op2=mask (dst reg)
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  alu_a = rf_rd_data_a;
+                                                AM_IMMEDIATE: alu_a = inst_r.imm_value;
+                                                AM_IMM_QUICK: alu_a = inst_r.imm_value;
+                                                default:      alu_a = rf_rd_data_a;
+                                            endcase
+                                            alu_b = rf_rd_data_b; // mask
+                                            // Apply mask limit based on dst_size
+                                            if (inst_r.dst_size == SZ_HALF)
+                                                psw_wr_data = (psw & ~(rf_rd_data_b & 32'h0000FFFF)) | (alu_a & (rf_rd_data_b & 32'h0000FFFF));
+                                            else
+                                                psw_wr_data = (psw & ~(rf_rd_data_b & 32'h00FFFFFF)) | (alu_a & (rf_rd_data_b & 32'h00FFFFFF));
+                                            psw_wr_en = 1'b1;
+                                        end
+                                        SYS_LDPR: begin
+                                            // op1=value (from src), op2=preg index (from dst reg)
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  preg_wr_data = rf_rd_data_a;
+                                                AM_IMMEDIATE: preg_wr_data = inst_r.imm_value;
+                                                AM_IMM_QUICK: preg_wr_data = inst_r.imm_value;
+                                                default:      preg_wr_data = rf_rd_data_a;
+                                            endcase
+                                            preg_addr  = rf_rd_data_b[4:0];
+                                            preg_wr_en = 1'b1;
+                                        end
+                                        SYS_STPR: begin
+                                            // op1=preg index (from src), op2=dest register
+                                            case (inst_r.am_src)
+                                                AM_REGISTER:  preg_addr = rf_rd_data_a[4:0];
+                                                AM_IMMEDIATE: preg_addr = inst_r.imm_value[4:0];
+                                                AM_IMM_QUICK: preg_addr = inst_r.imm_value[4:0];
+                                                default:      preg_addr = rf_rd_data_a[4:0];
+                                            endcase
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                            rf_wr_data = preg_rd_data;
+                                        end
+                                        default: ;
+                                    endcase
                                 end else begin
                                     rf_rd_addr_a = inst_r.reg_src;
                                     rf_rd_addr_b = inst_r.reg_dst;
@@ -781,6 +1019,7 @@ module v60_control
                                         rf_wr_en   = 1'b1;
                                         rf_wr_addr = inst_r.reg_dst;
                                         rf_wr_data = alu_result;
+                                        rf_wr_size = inst_r.data_size;
                                     end
 
                                     if (inst_r.writes_flags) begin
@@ -805,6 +1044,20 @@ module v60_control
                                             rf_wr_addr = inst_r.reg_dst;
                                             rf_wr_data = psw;
                                         end
+                                    end else if (inst_r.sys_op == SYS_TASI) begin
+                                        // TASI register: SUB(val, 0xFF) for flags, write 0xFF back
+                                        rf_rd_addr_a = inst_r.reg_dst;
+                                        alu_a        = 32'h000000FF;
+                                        alu_b        = {24'h0, rf_rd_data_a[7:0]};
+                                        alu_op       = ALU_SUB;
+                                        alu_size     = SZ_BYTE;
+                                        alu_flags_in = psw[3:0];
+                                        psw_cc_wr_en   = 1'b1;
+                                        psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                                        rf_wr_en   = 1'b1;
+                                        rf_wr_addr = inst_r.reg_dst;
+                                        rf_wr_data = 32'h000000FF;
+                                        rf_wr_size = SZ_BYTE;
                                     end else if (inst_r.alu_op == ALU_INC || inst_r.alu_op == ALU_DEC) begin
                                         rf_rd_addr_a = inst_r.reg_dst;
                                         alu_a        = rf_rd_data_a;
@@ -816,6 +1069,7 @@ module v60_control
                                             rf_wr_en   = 1'b1;
                                             rf_wr_addr = inst_r.reg_dst;
                                             rf_wr_data = alu_result;
+                                            rf_wr_size = inst_r.data_size;
                                         end
 
                                         psw_cc_wr_en   = 1'b1;
@@ -923,10 +1177,103 @@ module v60_control
                         if (!indirect_active) begin
                             case (inst_r.format)
                                 FMT_I: begin
-                                    if (inst_r.is_mem_src) begin
+                                    if (inst_r.sys_op != SYS_NONE && inst_r.is_mem_src) begin
+                                        // Phase 8: sys ops after memory read
+                                        rf_wr_size = inst_r.dst_size;
+                                        case (inst_r.sys_op)
+                                            SYS_MOVSB: begin
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = {{24{temp_data[7]}}, temp_data[7:0]};
+                                            end
+                                            SYS_MOVZB: begin
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = {24'h0, temp_data[7:0]};
+                                            end
+                                            SYS_MOVSH: begin
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = {{16{temp_data[15]}}, temp_data[15:0]};
+                                            end
+                                            SYS_MOVZH: begin
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = {16'h0, temp_data[15:0]};
+                                            end
+                                            SYS_MOVT: begin
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                if (inst_r.dst_size == SZ_BYTE) begin
+                                                    rf_wr_data = {24'h0, temp_data[7:0]};
+                                                    if (inst_r.data_size == SZ_HALF)
+                                                        psw_cc_wr_data[2] = (temp_data[7] ? (temp_data[15:8] != 8'hFF) : (temp_data[15:8] != 8'h00));
+                                                    else
+                                                        psw_cc_wr_data[2] = (temp_data[7] ? (temp_data[31:8] != 24'hFFFFFF) : (temp_data[31:8] != 24'h000000));
+                                                end else begin
+                                                    rf_wr_data = {16'h0, temp_data[15:0]};
+                                                    psw_cc_wr_data[2] = (temp_data[15] ? (temp_data[31:16] != 16'hFFFF) : (temp_data[31:16] != 16'h0000));
+                                                end
+                                                psw_cc_wr_data[0] = psw[PSW_Z];
+                                                psw_cc_wr_data[1] = psw[PSW_S];
+                                                psw_cc_wr_data[3] = psw[PSW_CY];
+                                                psw_cc_wr_en = 1'b1;
+                                            end
+                                            SYS_MOVEA: begin
+                                                // Indirect MOVEA: target address = temp_data + imm_value2
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = temp_data + inst_r.imm_value2;
+                                            end
+                                            SYS_SETF: begin
+                                                flags_cond = temp_data[3:0];
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = {31'h0, flags_cond_met};
+                                            end
+                                            SYS_UPDPSW: begin
+                                                // mem src: temp_data=value, dst reg=mask
+                                                rf_rd_addr_b = inst_r.reg_dst;
+                                                if (inst_r.dst_size == SZ_HALF)
+                                                    psw_wr_data = (psw & ~(rf_rd_data_b & 32'h0000FFFF)) | (temp_data & (rf_rd_data_b & 32'h0000FFFF));
+                                                else
+                                                    psw_wr_data = (psw & ~(rf_rd_data_b & 32'h00FFFFFF)) | (temp_data & (rf_rd_data_b & 32'h00FFFFFF));
+                                                psw_wr_en = 1'b1;
+                                            end
+                                            SYS_LDPR: begin
+                                                rf_rd_addr_b = inst_r.reg_dst;
+                                                preg_addr    = rf_rd_data_b[4:0];
+                                                preg_wr_data = temp_data;
+                                                preg_wr_en   = 1'b1;
+                                            end
+                                            SYS_STPR: begin
+                                                preg_addr  = temp_data[4:0];
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = preg_rd_data;
+                                            end
+                                            default: ;
+                                        endcase
+                                    end else if (inst_r.is_mem_src) begin
                                         alu_a = temp_data;
                                         rf_rd_addr_b = inst_r.reg_dst;
                                         alu_b = rf_rd_data_b;
+
+                                        alu_op       = inst_r.alu_op;
+                                        alu_size     = inst_r.data_size;
+                                        alu_flags_in = psw[3:0];
+
+                                        if (inst_r.alu_op != ALU_CMP && inst_r.alu_op != ALU_TEST1) begin
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                            rf_wr_data = alu_result;
+                                            rf_wr_size = inst_r.data_size;
+                                        end
+
+                                        if (inst_r.writes_flags) begin
+                                            psw_cc_wr_en   = 1'b1;
+                                            psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                                        end
                                     end else begin
                                         rf_rd_addr_a = inst_r.reg_src;
                                         case (inst_r.am_src)
@@ -936,33 +1283,38 @@ module v60_control
                                             default:      alu_a = rf_rd_data_a;
                                         endcase
                                         alu_b = temp_data;
-                                    end
 
-                                    alu_op       = inst_r.alu_op;
-                                    alu_size     = inst_r.data_size;
-                                    alu_flags_in = psw[3:0];
+                                        alu_op       = inst_r.alu_op;
+                                        alu_size     = inst_r.data_size;
+                                        alu_flags_in = psw[3:0];
 
-                                    if (inst_r.is_mem_src && inst_r.alu_op != ALU_CMP && inst_r.alu_op != ALU_TEST1) begin
-                                        rf_wr_en   = 1'b1;
-                                        rf_wr_addr = inst_r.reg_dst;
-                                        rf_wr_data = alu_result;
-                                    end
-
-                                    if (inst_r.writes_flags) begin
-                                        psw_cc_wr_en   = 1'b1;
-                                        psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                                        if (inst_r.writes_flags) begin
+                                            psw_cc_wr_en   = 1'b1;
+                                            psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                                        end
                                     end
                                 end
 
                                 FMT_III: begin
-                                    alu_a        = temp_data;
-                                    alu_op       = inst_r.alu_op;
-                                    alu_size     = inst_r.data_size;
-                                    alu_flags_in = psw[3:0];
-
-                                    if (inst_r.writes_flags) begin
+                                    if (inst_r.sys_op == SYS_TASI) begin
+                                        // TASI memory: SUB(val, 0xFF) for flags, write 0xFF back
+                                        alu_a        = 32'h000000FF;
+                                        alu_b        = {24'h0, temp_data[7:0]};
+                                        alu_op       = ALU_SUB;
+                                        alu_size     = SZ_BYTE;
+                                        alu_flags_in = psw[3:0];
                                         psw_cc_wr_en   = 1'b1;
                                         psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                                    end else begin
+                                        alu_a        = temp_data;
+                                        alu_op       = inst_r.alu_op;
+                                        alu_size     = inst_r.data_size;
+                                        alu_flags_in = psw[3:0];
+
+                                        if (inst_r.writes_flags) begin
+                                            psw_cc_wr_en   = 1'b1;
+                                            psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                                        end
                                     end
                                 end
 
@@ -995,8 +1347,8 @@ module v60_control
                     end
 
                     CF_NONE: begin
-                        // Standard write uses inst_r.data_size
-                        data_bus_size  = inst_r.data_size;
+                        // Cross-size MOV: write uses dst_size; others use data_size
+                        data_bus_size  = (inst_r.sys_op != SYS_NONE) ? inst_r.dst_size : inst_r.data_size;
                         data_bus_wdata = temp_data;
                     end
 

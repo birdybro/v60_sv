@@ -697,6 +697,168 @@ class V60Asm:
         self._fmt1_imm_reg('test1', 'w', bit_pos, dst_reg)
 
     # =========================================================================
+    # Phase 8: Cross-size MOV, MOVEA, RVBIT, RVBYT, SETF, UPDPSW, LDPR, STPR, TASI
+    # =========================================================================
+
+    # Cross-size MOV opcode table: {mnemonic: opcode}
+    _XMOV_OPCODES = {
+        'movsbh': 0x0A, 'movzbh': 0x0B, 'movsbw': 0x0C, 'movzbw': 0x0D,
+        'movthb': 0x19, 'movshw': 0x1C, 'movzhw': 0x1D,
+        'movtwb': 0x29, 'movtwh': 0x2B,
+    }
+
+    # Source dimensions for cross-size MOV
+    _XMOV_SRC_DIM = {
+        'movsbh': 'b', 'movzbh': 'b', 'movsbw': 'b', 'movzbw': 'b',
+        'movthb': 'h', 'movshw': 'h', 'movzhw': 'h',
+        'movtwb': 'w', 'movtwh': 'w',
+    }
+
+    def _xmov_reg_reg(self, mnemonic, src_reg, dst_reg):
+        """Cross-size MOV: Rsrc → Rdst (d=0 reg=src, m=1 mod=reg dest)."""
+        opcode = self._XMOV_OPCODES[mnemonic]
+        byte1 = (1 << 6) | (0 << 5) | (src_reg & 0x1F)
+        mod = self._encode_mod_register(dst_reg)
+        self.code.extend([opcode, byte1, mod])
+
+    def _xmov_imm_reg(self, mnemonic, imm_val, dst_reg):
+        """Cross-size MOV: #imm → Rdst (d=1 reg=dst, m=0 mod=imm src)."""
+        opcode = self._XMOV_OPCODES[mnemonic]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_immediate()
+        self.code.extend([opcode, byte1, mod])
+        src_dim = self._XMOV_SRC_DIM[mnemonic]
+        nbytes = self._size_byte_count(src_dim)
+        self.code.extend((imm_val & ((1 << (nbytes*8)) - 1)).to_bytes(nbytes, 'little'))
+
+    # Cross-size MOV convenience methods
+    def movsbh_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movsbh', src_reg, dst_reg)
+    def movsbw_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movsbw', src_reg, dst_reg)
+    def movshw_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movshw', src_reg, dst_reg)
+    def movzbh_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movzbh', src_reg, dst_reg)
+    def movzbw_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movzbw', src_reg, dst_reg)
+    def movzhw_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movzhw', src_reg, dst_reg)
+    def movthb_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movthb', src_reg, dst_reg)
+    def movtwb_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movtwb', src_reg, dst_reg)
+    def movtwh_reg_reg(self, src_reg, dst_reg):
+        self._xmov_reg_reg('movtwh', src_reg, dst_reg)
+    def movsbw_imm_reg(self, imm_val, dst_reg):
+        self._xmov_imm_reg('movsbw', imm_val, dst_reg)
+
+    # MOVEA: move effective address (d=0 reg=src, m=1 mod=reg dest)
+    def _movea_reg_reg(self, dim, src_reg, dst_reg):
+        """MOVEA: reg→reg (returns register value, not index for reg mode)."""
+        opcodes = {'b': 0x40, 'h': 0x42, 'w': 0x44}
+        opcode = opcodes[dim]
+        byte1 = (1 << 6) | (0 << 5) | (src_reg & 0x1F)
+        mod = self._encode_mod_register(dst_reg)
+        self.code.extend([opcode, byte1, mod])
+
+    def moveaw_reg_reg(self, src_reg, dst_reg):
+        self._movea_reg_reg('w', src_reg, dst_reg)
+
+    # RVBIT/RVBYT
+    def rvbit_reg_reg(self, src_reg, dst_reg):
+        """RVBIT R,R: d=0 reg=src, m=1 mod=reg dest."""
+        byte1 = (1 << 6) | (0 << 5) | (src_reg & 0x1F)
+        mod = self._encode_mod_register(dst_reg)
+        self.code.extend([0x08, byte1, mod])
+
+    def rvbit_imm_reg(self, imm_val, dst_reg):
+        """RVBIT #imm,R: d=1 reg=dst, m=0 mod=imm src."""
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_immediate()
+        self.code.extend([0x08, byte1, mod, imm_val & 0xFF])
+
+    def rvbyt_reg_reg(self, src_reg, dst_reg):
+        """RVBYT R,R: d=0 reg=src, m=1 mod=reg dest."""
+        byte1 = (1 << 6) | (0 << 5) | (src_reg & 0x1F)
+        mod = self._encode_mod_register(dst_reg)
+        self.code.extend([0x2C, byte1, mod])
+
+    def rvbyt_imm_reg(self, imm_val, dst_reg):
+        """RVBYT #imm,R: d=1 reg=dst, m=0 mod=imm src."""
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_immediate()
+        self.code.extend([0x2C, byte1, mod])
+        self.code.extend((imm_val & 0xFFFFFFFF).to_bytes(4, 'little'))
+
+    # SETF
+    def setf_reg_reg(self, src_reg, dst_reg):
+        """SETF R,R: d=0 reg=src, m=1 mod=reg dest."""
+        byte1 = (1 << 6) | (0 << 5) | (src_reg & 0x1F)
+        mod = self._encode_mod_register(dst_reg)
+        self.code.extend([0x47, byte1, mod])
+
+    def setf_imm_reg(self, cond, dst_reg):
+        """SETF #imm,R: d=1 reg=dst, m=0 mod=imm src."""
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_immediate()
+        self.code.extend([0x47, byte1, mod, cond & 0xFF])
+
+    def setf_immq_reg(self, cond, dst_reg):
+        """SETF #q,R: d=1 reg=dst, m=0 mod=immq src."""
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_imm_quick(cond)
+        self.code.extend([0x47, byte1, mod])
+
+    # UPDPSW
+    def updpsww_reg_reg(self, val_reg, mask_reg):
+        """UPDPSW.W Rval, Rmask: d=0 reg=val(src), m=1 mod=reg mask(dst)."""
+        byte1 = (1 << 6) | (0 << 5) | (val_reg & 0x1F)
+        mod = self._encode_mod_register(mask_reg)
+        self.code.extend([0x13, byte1, mod])
+
+    def updpswh_reg_reg(self, val_reg, mask_reg):
+        """UPDPSW.H Rval, Rmask: d=0 reg=val(src), m=1 mod=reg mask(dst)."""
+        byte1 = (1 << 6) | (0 << 5) | (val_reg & 0x1F)
+        mod = self._encode_mod_register(mask_reg)
+        self.code.extend([0x4A, byte1, mod])
+
+    def updpsww_imm_reg(self, val, mask_reg):
+        """UPDPSW.W #val, Rmask."""
+        byte1 = (0 << 6) | (1 << 5) | (mask_reg & 0x1F)
+        mod = self._encode_mod_immediate()
+        self.code.extend([0x13, byte1, mod])
+        self.code.extend((val & 0xFFFFFFFF).to_bytes(4, 'little'))
+
+    # LDPR: op1=value (src), op2=preg index (dst)
+    def ldpr_reg_reg(self, val_reg, idx_reg):
+        """LDPR Rval, Ridx: d=0 reg=val(src), m=1 mod=reg idx(dst)."""
+        byte1 = (1 << 6) | (0 << 5) | (val_reg & 0x1F)
+        mod = self._encode_mod_register(idx_reg)
+        self.code.extend([0x12, byte1, mod])
+
+    # STPR: op1=preg index (src), op2=dest
+    def stpr_reg_reg(self, idx_reg, dst_reg):
+        """STPR Ridx, Rdst: d=0 reg=idx(src), m=1 mod=reg dst."""
+        byte1 = (1 << 6) | (0 << 5) | (idx_reg & 0x1F)
+        mod = self._encode_mod_register(dst_reg)
+        self.code.extend([0x02, byte1, mod])
+
+    def stpr_imm_reg(self, preg_idx, dst_reg):
+        """STPR #idx, Rdst: d=1 reg=dst, m=0 mod=imm src."""
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_immediate()
+        self.code.extend([0x02, byte1, mod])
+        self.code.extend((preg_idx & 0xFFFFFFFF).to_bytes(4, 'little'))
+
+    # TASI: Format III, byte operand
+    def tasi_reg(self, reg):
+        """TASI Rreg — Format III (m=1 for register)."""
+        opcode = 0xE1  # m=1
+        mod = self._encode_mod_register(reg)
+        self.code.extend([opcode, mod])
+
+    # =========================================================================
     # Raw data embedding
     # =========================================================================
     def data_byte(self, val):
@@ -1834,6 +1996,131 @@ def build_phase7_test():
     print("Phase 7 test: 23 test cases")
 
 
+def build_phase8_test():
+    a = V60Asm()
+
+    # === Cross-size MOV: sign extend ===
+
+    # Test 1: MOVSBH 0x80 → 0xFF80 (sign extend byte to half)
+    a.mov_imm_reg('b', 0x80, 0)          # R0 = 0x80
+    a.movsbh_reg_reg(0, 1)               # R1 = sign_ext_b2h(0x80) = 0xFF80
+
+    # Test 2: MOVSBW 0x80 → 0xFFFFFF80 (sign extend byte to word)
+    a.mov_imm_reg('b', 0x80, 0)          # R0 = 0x80
+    a.movsbw_reg_reg(0, 2)               # R2 = sign_ext_b2w(0x80) = 0xFFFFFF80
+
+    # Test 3: MOVSHW 0x8000 → 0xFFFF8000 (sign extend half to word)
+    a.mov_imm_reg('h', 0x8000, 0)        # R0 = 0x8000
+    a.movshw_reg_reg(0, 3)               # R3 = sign_ext_h2w(0x8000) = 0xFFFF8000
+
+    # === Cross-size MOV: zero extend ===
+
+    # Test 4: MOVZBH 0x80 → 0x0080 (zero extend byte to half)
+    a.mov_imm_reg('b', 0x80, 0)          # R0 = 0x80
+    a.movzbh_reg_reg(0, 4)               # R4 = zero_ext_b2h(0x80) = 0x0080
+
+    # Test 5: MOVZBW 0x80 → 0x00000080 (zero extend byte to word)
+    a.mov_imm_reg('b', 0x80, 0)          # R0 = 0x80
+    a.movzbw_reg_reg(0, 5)               # R5 = zero_ext_b2w(0x80) = 0x00000080
+
+    # Test 6: MOVZHW 0x8000 → 0x00008000 (zero extend half to word)
+    a.mov_imm_reg('h', 0x8000, 0)        # R0 = 0x8000
+    a.movzhw_reg_reg(0, 6)               # R6 = zero_ext_h2w(0x8000) = 0x00008000
+
+    # === Cross-size MOV: truncate ===
+
+    # Test 7: MOVTHB 0x0042 → 0x42, OV=0 (no info lost)
+    a.mov_imm_reg('h', 0x0042, 0)        # R0 = 0x0042
+    a.movthb_reg_reg(0, 7)               # R7 = 0x42, OV=0
+    a.getpsw(20)                          # R20 = PSW (check OV=0)
+
+    # Test 8: MOVTHB 0x0180 → 0x80, OV=1 (info lost: high byte 0x01 != sign ext of 0x80)
+    a.mov_imm_reg('h', 0x0180, 0)        # R0 = 0x0180
+    a.movthb_reg_reg(0, 8)               # R8 = 0x80, OV=1
+    a.getpsw(21)                          # R21 = PSW (check OV=1)
+
+    # Test 9: MOVTWB 0x12345678 → 0x78, OV=1
+    a.mov_imm_reg('w', 0x12345678, 0)    # R0 = 0x12345678
+    a.movtwb_reg_reg(0, 9)               # R9 = 0x78, OV=1
+
+    # Test 10: MOVTWH 0xFFFF8000 → 0x8000, OV=0 (high word 0xFFFF = sign ext of 0x8000)
+    a.mov_imm_reg('w', 0xFFFF8000, 0)    # R0 = 0xFFFF8000
+    a.movtwh_reg_reg(0, 10)              # R10 = 0x8000, OV=0
+
+    # Test 11: MOVTWH 0x00018000 → 0x8000, OV=1 (high word 0x0001 != sign ext of 0x8000)
+    a.mov_imm_reg('w', 0x00018000, 0)    # R0 = 0x00018000
+    a.movtwh_reg_reg(0, 11)              # R11 = 0x8000, OV=1
+    a.getpsw(22)                          # R22 = PSW (check OV=1)
+
+    # === MOVEA ===
+
+    # Test 12: MOVEAW reg→reg (writes register index, not value)
+    a.mov_imm_reg('w', 0xDEADBEEF, 5)    # R5 = 0xDEADBEEF
+    a.moveaw_reg_reg(5, 12)              # R12 = 5 (register index, not 0xDEADBEEF)
+
+    # === RVBIT / RVBYT ===
+
+    # Test 13: RVBIT 0x01 → 0x80 (bit reverse)
+    a.mov_imm_reg('b', 0x01, 0)          # R0 = 0x01
+    a.rvbit_reg_reg(0, 13)               # R13 = 0x80
+
+    # Test 14: RVBYT 0x12345678 → 0x78563412 (byte swap)
+    a.mov_imm_reg('w', 0x12345678, 0)    # R0 = 0x12345678
+    a.rvbyt_reg_reg(0, 14)               # R14 = 0x78563412
+
+    # === SETF ===
+
+    # Test 15: SETF cond=5 (BNE=Z==0) with Z=0 → result=1
+    # Clear flags first
+    a.mov_imm_reg('w', 1, 0)             # R0 = 1
+    a.cmp_imm_reg('w', 0, 0)             # 1-0 → Z=0, CY=0
+    a.setf_immq_reg(5, 15)               # cond=5 (BNE), Z=0 → true → R15=1
+
+    # Test 16: SETF cond=5 (BNE=Z==0) with Z=1 → result=0
+    a.mov_imm_reg('w', 0, 0)             # R0 = 0
+    a.cmp_imm_reg('w', 0, 0)             # 0-0 → Z=1
+    a.setf_immq_reg(5, 16)               # cond=5 (BNE), Z=1 → false → R16=0
+
+    # === UPDPSW ===
+
+    # Test 17: UPDPSWW — set CY (bit 3)
+    a.mov_imm_reg('w', 0x08, 0)          # R0 = 0x08 (CY bit)
+    a.mov_imm_reg('w', 0x0F, 1)          # R1 = 0x0F (mask: all CC bits)
+    a.updpsww_reg_reg(0, 1)              # PSW = (PSW & ~0x0F) | (0x08 & 0x0F) → CY=1
+    a.getpsw(23)                          # R23 = PSW (CY=1)
+
+    # Test 18: UPDPSWH — set S flag (bit 1)
+    a.mov_imm_reg('w', 0x02, 0)          # R0 = 0x02 (S bit)
+    a.mov_imm_reg('w', 0x0F, 1)          # R1 = 0x0F (mask: all CC bits)
+    a.updpswh_reg_reg(0, 1)              # PSW = (PSW & ~0x0F) | (0x02 & 0x0F) → S=1
+    a.getpsw(24)                          # R24 = PSW (S=1)
+
+    # === LDPR + STPR ===
+
+    # Test 19: LDPR+STPR round-trip — write to preg, read it back
+    a.mov_imm_reg('w', 0x12345678, 0)    # R0 = 0x12345678 (value to store)
+    a.mov_imm_reg('w', 24, 1)            # R1 = 24 (preg index — ISP)
+    a.ldpr_reg_reg(0, 1)                 # preg[24] = R0 = 0x12345678
+    a.mov_imm_reg('w', 24, 2)            # R2 = 24 (preg index)
+    a.stpr_reg_reg(2, 17)                # R17 = preg[24] = 0x12345678
+
+    # === TASI ===
+
+    # Test 20: TASI reg — read byte, SUB flags, write 0xFF
+    a.mov_imm_reg('b', 0x42, 18)         # R18 = 0x42
+    a.tasi_reg(18)                        # flags from SUB(0x42, 0xFF), R18 = 0xFF
+    a.getpsw(25)                          # R25 = PSW (from SUB 0x42-0xFF)
+
+    # === Cross-size MOV with immediate source ===
+
+    # Test 21: MOVSBW imm 0x80 → 0xFFFFFF80
+    a.movsbw_imm_reg(0x80, 19)           # R19 = sign_ext_b2w(0x80) = 0xFFFFFF80
+
+    a.halt()
+    a.write('tests/phase8_test.bin')
+    print("Phase 8 test: 21 test cases")
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'phase3':
         build_phase3_test()
@@ -1849,5 +2136,7 @@ if __name__ == '__main__':
         build_phase6_ext_test()
     elif len(sys.argv) > 1 and sys.argv[1] == 'phase7':
         build_phase7_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase8':
+        build_phase8_test()
     else:
         build_phase2_test()

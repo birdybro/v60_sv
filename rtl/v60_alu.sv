@@ -432,6 +432,14 @@ module v60_alu
                 result  = b;
             end
 
+            ALU_RVBIT: begin
+                result = {24'h0, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]};
+            end
+
+            ALU_RVBYT: begin
+                result = {a[7:0], a[15:8], a[23:16], a[31:24]};
+            end
+
             ALU_NOP: begin
                 result = a;
             end
@@ -441,10 +449,11 @@ module v60_alu
             end
         endcase
 
-        // Common Z/S flag computation (skip for NOP and bit ops)
+        // Common Z/S flag computation (skip for NOP, bit ops, RVBIT, RVBYT)
         if (op != ALU_NOP &&
             op != ALU_SET1 && op != ALU_CLR1 &&
-            op != ALU_NOT1 && op != ALU_TEST1) begin
+            op != ALU_NOT1 && op != ALU_TEST1 &&
+            op != ALU_RVBIT && op != ALU_RVBYT) begin
             flag_z = (result == 32'h0);
             flag_s = result[msb_pos];
         end

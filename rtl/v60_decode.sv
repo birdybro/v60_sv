@@ -1,6 +1,6 @@
 // v60_decode.sv — Instruction decoder
-// Phase 6: Adds control flow: JMP, JSR, BSR, RET, PREPARE, DISPOSE,
-//          PUSH, POP, PUSHM, POPM
+// Phase 8: Adds system/utility: cross-size MOV, MOVEA, RVBIT, RVBYT,
+//          SETF, UPDPSW, LDPR, STPR, TASI
 // Combinational decode from fetch buffer window
 
 /* verilator lint_off UNUSEDSIGNAL */
@@ -53,14 +53,22 @@ module v60_decode
     // =========================================================================
     logic       is_fmt1_mov;
     logic       is_fmt1_alu;
+    logic       is_fmt1_sys;
     alu_op_t    fmt1_alu_op;
     data_size_t fmt1_size;
+    sys_op_t    fmt1_sys_op;
+    data_size_t fmt1_src_size;
+    data_size_t fmt1_dst_size;
 
     always_comb begin
         is_fmt1_mov = 1'b0;
         is_fmt1_alu = 1'b0;
+        is_fmt1_sys = 1'b0;
         fmt1_alu_op = ALU_NOP;
         fmt1_size   = SZ_WORD;
+        fmt1_sys_op  = SYS_NONE;
+        fmt1_src_size = SZ_WORD;
+        fmt1_dst_size = SZ_WORD;
 
         // MOV family
         if (opcode == OP_MOV_B) begin
@@ -213,11 +221,57 @@ module v60_decode
             is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_CLR1; fmt1_size = SZ_WORD;
         end else if (opcode == OP_NOT1) begin
             is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_NOT1; fmt1_size = SZ_WORD;
+        // Phase 8: RVBIT/RVBYT (ALU path, no flags)
+        end else if (opcode == OP_RVBIT) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_RVBIT; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_RVBYT) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_RVBYT; fmt1_size = SZ_WORD;
+        // Phase 8: Cross-size MOV (sign extend)
+        end else if (opcode == OP_MOVSBH) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVSB; fmt1_src_size = SZ_BYTE; fmt1_dst_size = SZ_HALF;
+        end else if (opcode == OP_MOVSBW) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVSB; fmt1_src_size = SZ_BYTE; fmt1_dst_size = SZ_WORD;
+        end else if (opcode == OP_MOVSHW) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVSH; fmt1_src_size = SZ_HALF; fmt1_dst_size = SZ_WORD;
+        // Phase 8: Cross-size MOV (zero extend)
+        end else if (opcode == OP_MOVZBH) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVZB; fmt1_src_size = SZ_BYTE; fmt1_dst_size = SZ_HALF;
+        end else if (opcode == OP_MOVZBW) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVZB; fmt1_src_size = SZ_BYTE; fmt1_dst_size = SZ_WORD;
+        end else if (opcode == OP_MOVZHW) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVZH; fmt1_src_size = SZ_HALF; fmt1_dst_size = SZ_WORD;
+        // Phase 8: Cross-size MOV (truncate)
+        end else if (opcode == OP_MOVTHB) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVT; fmt1_src_size = SZ_HALF; fmt1_dst_size = SZ_BYTE;
+        end else if (opcode == OP_MOVTWB) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVT; fmt1_src_size = SZ_WORD; fmt1_dst_size = SZ_BYTE;
+        end else if (opcode == OP_MOVTWH) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVT; fmt1_src_size = SZ_WORD; fmt1_dst_size = SZ_HALF;
+        // Phase 8: MOVEA (address, not data)
+        end else if (opcode == OP_MOVEAB) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVEA; fmt1_src_size = SZ_BYTE; fmt1_dst_size = SZ_WORD;
+        end else if (opcode == OP_MOVEAH) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVEA; fmt1_src_size = SZ_HALF; fmt1_dst_size = SZ_WORD;
+        end else if (opcode == OP_MOVEAW) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_MOVEA; fmt1_src_size = SZ_WORD; fmt1_dst_size = SZ_WORD;
+        // Phase 8: SETF
+        end else if (opcode == OP_SETF) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_SETF; fmt1_src_size = SZ_BYTE; fmt1_dst_size = SZ_BYTE;
+        // Phase 8: UPDPSW
+        end else if (opcode == OP_UPDPSWW) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_UPDPSW; fmt1_src_size = SZ_WORD; fmt1_dst_size = SZ_WORD;
+        end else if (opcode == OP_UPDPSWH) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_UPDPSW; fmt1_src_size = SZ_WORD; fmt1_dst_size = SZ_HALF;
+        // Phase 8: LDPR/STPR
+        end else if (opcode == OP_LDPR) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_LDPR; fmt1_src_size = SZ_WORD; fmt1_dst_size = SZ_WORD;
+        end else if (opcode == OP_STPR) begin
+            is_fmt1_sys = 1'b1; fmt1_sys_op = SYS_STPR; fmt1_src_size = SZ_WORD; fmt1_dst_size = SZ_WORD;
         end
     end
 
     logic is_fmt1;
-    assign is_fmt1 = is_fmt1_mov || is_fmt1_alu;
+    assign is_fmt1 = is_fmt1_mov || is_fmt1_alu || is_fmt1_sys;
 
     // =========================================================================
     // Source dimension override for shift/rotate
@@ -228,7 +282,14 @@ module v60_decode
                                fmt1_alu_op == ALU_ROT || fmt1_alu_op == ALU_ROTC);
 
     data_size_t fmt1_mod_dim;
-    assign fmt1_mod_dim = (fmt1_src_is_byte && fmt1_d) ? SZ_BYTE : fmt1_size;
+    always_comb begin
+        if (is_fmt1_sys)
+            fmt1_mod_dim = fmt1_d ? fmt1_src_size : fmt1_dst_size;
+        else if (fmt1_src_is_byte && fmt1_d)
+            fmt1_mod_dim = SZ_BYTE;
+        else
+            fmt1_mod_dim = fmt1_size;
+    end
 
     // =========================================================================
     // Immediate value size in bytes (based on mod dimension)
@@ -846,8 +907,20 @@ module v60_decode
             end
 
             // MOV does NOT modify flags; ALU ops (ADD, SUB, etc.) do
-            decoded.writes_flags = (fmt1_alu_op != ALU_MOV);
+            // RVBIT/RVBYT do not modify flags
+            decoded.writes_flags = (fmt1_alu_op != ALU_MOV &&
+                                    fmt1_alu_op != ALU_RVBIT && fmt1_alu_op != ALU_RVBYT);
             decoded.src_is_byte  = fmt1_src_is_byte;
+
+            // Phase 8: sys op overrides
+            if (is_fmt1_sys) begin
+                decoded.data_size    = fmt1_src_size;
+                decoded.dst_size     = fmt1_dst_size;
+                decoded.sys_op       = fmt1_sys_op;
+                decoded.writes_flags = (fmt1_sys_op == SYS_MOVT);
+            end else begin
+                decoded.dst_size = fmt1_size;
+            end
 
             decoded.inst_len = 6'd2 + f1_mod_len;
             decode_valid     = (ibuf_valid_count >= (5'd2 + f1_mod_len[4:0]));
@@ -1097,6 +1170,25 @@ module v60_decode
             decoded.reg_dst        = f3_mod_reg;
             decoded.imm_value      = f3_mod_imm;
             decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: TASI (0xE0/0xE1) — test-and-set byte
+        // =====================================================================
+        end else if (opcode == OP_TASI_0 || opcode == OP_TASI_1) begin
+            decoded.format         = FMT_III;
+            decoded.data_size      = SZ_BYTE;
+            decoded.writes_flags   = 1'b1;
+            decoded.sys_op         = SYS_TASI;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
             decoded.needs_indirect = f3_mod_needs_indirect;
             decoded.imm_value2     = f3_mod_imm2;
             decoded.inst_len       = 6'd1 + f3_mod_len;

@@ -20,6 +20,7 @@ module v60_regfile
     input  logic        wr_en,
     input  logic [4:0]  wr_addr,
     input  logic [31:0] wr_data,
+    input  data_size_t  wr_size,        // Sub-word writes preserve upper bits
 
     // PC
     input  logic        pc_wr_en,
@@ -181,7 +182,11 @@ module v60_regfile
                         endcase
                     end
                 end else begin
-                    gpr[wr_addr] <= wr_data;
+                    case (wr_size)
+                        SZ_BYTE: gpr[wr_addr] <= {gpr[wr_addr][31:8],  wr_data[7:0]};
+                        SZ_HALF: gpr[wr_addr] <= {gpr[wr_addr][31:16], wr_data[15:0]};
+                        default: gpr[wr_addr] <= wr_data;
+                    endcase
                 end
             end
 
