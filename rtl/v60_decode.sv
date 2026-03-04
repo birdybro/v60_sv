@@ -1,10 +1,6 @@
 // v60_decode.sv — Instruction decoder
-// Phase 5B: Decodes Format V (NOP, HALT), Format IV (Bcc),
-//           Format I (MOV, ADD, SUB, CMP, AND, OR, XOR, ADDC, SUBC, NOT, NEG),
-//           Format III (GETPSW, INC, DEC)
-//           Memory addressing modes: [Rn], [Rn]+, -[Rn], Disp8/16/32[Rn],
-//           PCDisp8/16/32, DirectAddr, DispInd8/16/32, DblDisp8/16/32,
-//           PCDispInd8/16/32, DirectAddrDeferred, PCDblDisp8/16/32
+// Phase 6: Adds control flow: JMP, JSR, BSR, RET, PREPARE, DISPOSE,
+//          PUSH, POP, PUSHM, POPM
 // Combinational decode from fetch buffer window
 
 /* verilator lint_off UNUSEDSIGNAL */
@@ -427,16 +423,14 @@ module v60_decode
     assign f3_mod_lo = fmt3_mod_byte[4:0];
 
     // Format III immediate value extraction (at byte offset 2: opcode+modbyte+imm)
+    // For Phase 6 control flow ops, data_size is always SZ_WORD (4 bytes)
     logic [31:0] fmt3_imm_val;
     logic [2:0]  fmt3_imm_bytes;
     always_comb begin
-        // For Format III, the data size comes from the opcode
-        // INC/DEC: ((opcode & 0x06) >> 1) gives 0=B, 1=H, 2=W
-        // But we need this for the immediate extraction; for now just
-        // use the final decoded data_size. Since Format III imm modes
-        // are only ImmQuick (no full imm), this is unused but kept for consistency.
+        // All Format III control flow ops use SZ_WORD; INC/DEC use ImmQuick
+        // (never full immediate), so always extracting 4 bytes is safe.
         fmt3_imm_bytes = 3'd4;
-        fmt3_imm_val = 32'h0;
+        fmt3_imm_val = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
     end
 
     always_comb begin
@@ -561,6 +555,7 @@ module v60_decode
                 3'd7: begin  // Group7
                     if (f3_mod_lo <= 5'd15) begin
                         f3_mod_am  = AM_IMM_QUICK;
+                        f3_mod_imm = {27'd0, f3_mod_lo};
                         f3_mod_len = 6'd1;
                     end else if (f3_mod_lo == 5'd16) begin
                         // PCDisp8
@@ -586,6 +581,11 @@ module v60_decode
                         f3_mod_imm    = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
                         f3_mod_len    = 6'd5;
                         f3_mod_is_mem = 1'b1;
+                    end else if (f3_mod_lo == 5'd20) begin
+                        // Immediate (mod byte 0xF4): value follows mod byte
+                        f3_mod_am  = AM_IMMEDIATE;
+                        f3_mod_imm = fmt3_imm_val;
+                        f3_mod_len = 6'd1 + {3'd0, fmt3_imm_bytes};
                     end else if (f3_mod_lo == 5'd24) begin
                         // PCDispInd8
                         f3_mod_am             = AM_PC_DISP16;
@@ -683,6 +683,11 @@ module v60_decode
             decoded.format   = FMT_V;
             decoded.inst_len = 6'd1;
 
+        end else if (opcode == OP_DISPOSE) begin
+            decoded.format    = FMT_V;
+            decoded.ctrl_flow = CF_DISPOSE;
+            decoded.inst_len  = 6'd1;
+
         // =====================================================================
         // Format IV: Branch instructions (0x60-0x6F short, 0x70-0x7F long)
         // Note: 0x6B/0x7B are UNHANDLED in MAME (not BSR — BSR is at 0x48)
@@ -699,6 +704,17 @@ module v60_decode
             decoded.format    = FMT_IV;
             decoded.is_branch = 1'b1;
             decoded.cond      = opcode[3:0];
+            decoded.imm_value = {{16{disp16[15]}}, disp16};
+            decoded.inst_len  = 6'd3;
+            decode_valid      = (ibuf_valid_count >= 5'd3);
+
+        // =====================================================================
+        // BSR: 3-byte fixed format (opcode + 16-bit signed displacement)
+        // =====================================================================
+        end else if (opcode == OP_BSR) begin
+            decoded.format    = FMT_IV;
+            decoded.ctrl_flow = CF_BSR;
+            decoded.is_branch = 1'b1;
             decoded.imm_value = {{16{disp16[15]}}, disp16};
             decoded.inst_len  = 6'd3;
             decode_valid      = (ibuf_valid_count >= 5'd3);
@@ -858,6 +874,138 @@ module v60_decode
             decoded.is_mem_dst     = f3_mod_is_mem;
             decoded.auto_inc       = f3_mod_auto_inc;
             decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: JMP (0xD6/0xD7) — address operand (jump to effective addr)
+        // Uses ReadAMAddress: the effective address IS the target, not a value.
+        // =====================================================================
+        end else if (opcode == OP_JMP_0 || opcode == OP_JMP_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_JMP;
+            decoded.is_branch      = 1'b1;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: JSR (0xE8/0xE9) — address operand (push ret addr, jump)
+        // =====================================================================
+        end else if (opcode == OP_JSR_0 || opcode == OP_JSR_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_JSR;
+            decoded.is_branch      = 1'b1;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: RET (0xE2/0xE3) — value operand (cleanup size)
+        // =====================================================================
+        end else if (opcode == OP_RET_0 || opcode == OP_RET_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_RET;
+            decoded.is_branch      = 1'b1;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: PREPARE (0xDE/0xDF) — value operand (local frame size)
+        // =====================================================================
+        end else if (opcode == OP_PREPARE_0 || opcode == OP_PREPARE_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_PREPARE;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: PUSH (0xEE/0xEF) — value operand (always 32-bit)
+        // =====================================================================
+        end else if (opcode == OP_PUSH_0 || opcode == OP_PUSH_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_PUSH;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: POP (0xE6/0xE7) — destination operand (always 32-bit)
+        // =====================================================================
+        end else if (opcode == OP_POP_0 || opcode == OP_POP_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_POP;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: PUSHM (0xEC/0xED) — value operand (32-bit bitmap)
+        // =====================================================================
+        end else if (opcode == OP_PUSHM_0 || opcode == OP_PUSHM_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_PUSHM;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: POPM (0xE4/0xE5) — value operand (32-bit bitmap)
+        // =====================================================================
+        end else if (opcode == OP_POPM_0 || opcode == OP_POPM_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_POPM;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
             decoded.needs_indirect = f3_mod_needs_indirect;
             decoded.imm_value2     = f3_mod_imm2;
             decoded.inst_len       = 6'd1 + f3_mod_len;

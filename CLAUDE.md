@@ -117,7 +117,7 @@ DPI-exported functions (`get_pc`, `get_psw`, `get_gpr`, `mem_write_byte`, etc.) 
 - **Phase 4** ✅ — Conditional branches (all 14 Bcc conditions)
 - **Phase 5A** ✅ — Simple memory addressing modes ([Rn], [Rn]+, -[Rn], Disp8/16/32[Rn], PCDisp, DirectAddr)
 - **Phase 5B** ✅ — Indirect + double displacement addressing modes (DispInd, DblDisp, PCDispInd, DirectAddrDeferred, PCDblDisp)
-- **Phase 6** — Control flow (JMP, JSR, RET, CALL, PREPARE/DISPOSE, PUSH/POP)
+- **Phase 6** ✅ — Control flow (JMP, JSR, BSR, RET, PREPARE/DISPOSE, PUSH/POP, PUSHM/POPM)
 - **Phase 7** — Multiply, divide, shifts, rotates, bit ops
 - **Phase 8** — System instructions & I/O
 - **Phase 9** — Interrupts & exceptions

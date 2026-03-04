@@ -86,7 +86,9 @@ module tb_v60_top
 
     export "DPI-C" function get_gpr;
     function int get_gpr(input int idx);
-        if (idx >= 0 && idx < 32)
+        if (idx == 31)
+            return int'(u_cpu.u_regfile.current_sp);
+        else if (idx >= 0 && idx < 32)
             return int'(u_cpu.u_regfile.gpr[idx]);
         else
             return 0;

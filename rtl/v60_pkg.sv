@@ -210,6 +210,23 @@ package v60_pkg;
     localparam logic [3:0] CC_BGT  = 4'hF;
 
     // =========================================================================
+    // Control flow instruction type
+    // =========================================================================
+    typedef enum logic [3:0] {
+        CF_NONE    = 4'd0,
+        CF_JMP     = 4'd1,
+        CF_JSR     = 4'd2,
+        CF_BSR     = 4'd3,
+        CF_RET     = 4'd4,
+        CF_PREPARE = 4'd5,
+        CF_DISPOSE = 4'd6,
+        CF_PUSH    = 4'd7,
+        CF_POP     = 4'd8,
+        CF_PUSHM   = 4'd9,
+        CF_POPM    = 4'd10
+    } ctrl_flow_t;
+
+    // =========================================================================
     // Key opcodes (verified against MAME optable.hxx)
     // =========================================================================
     localparam logic [7:0] OP_HALT    = 8'h00;
@@ -235,6 +252,18 @@ package v60_pkg;
     localparam logic [7:0] OP_RETIS_1  = 8'hFB;
     localparam logic [7:0] OP_JMP_0    = 8'hD6;
     localparam logic [7:0] OP_JMP_1    = 8'hD7;
+    localparam logic [7:0] OP_JSR_0    = 8'hE8;
+    localparam logic [7:0] OP_JSR_1    = 8'hE9;
+    localparam logic [7:0] OP_PUSH_0   = 8'hEE;
+    localparam logic [7:0] OP_PUSH_1   = 8'hEF;
+    localparam logic [7:0] OP_POP_0    = 8'hE6;
+    localparam logic [7:0] OP_POP_1    = 8'hE7;
+    localparam logic [7:0] OP_PUSHM_0  = 8'hEC;
+    localparam logic [7:0] OP_PUSHM_1  = 8'hED;
+    localparam logic [7:0] OP_POPM_0   = 8'hE4;
+    localparam logic [7:0] OP_POPM_1   = 8'hE5;
+    localparam logic [7:0] OP_PREPARE_0 = 8'hDE;
+    localparam logic [7:0] OP_PREPARE_1 = 8'hDF;
 
     // Branch opcode nibble identification
     localparam logic [3:0] OP_BCC_SHORT_HI = 4'h6;
@@ -345,6 +374,7 @@ package v60_pkg;
         logic           auto_dec;     // Pre-decrement side effect
         logic           needs_indirect; // Pointer dereference needed (indirect/dbldisp modes)
         logic [31:0]    imm_value2;   // Second displacement (DblDisp/PCDblDisp modes)
+        ctrl_flow_t     ctrl_flow;    // Control flow instruction type
     } decoded_inst_t;
 
 endpackage
