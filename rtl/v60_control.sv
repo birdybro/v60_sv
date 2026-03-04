@@ -1,9 +1,9 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 // v60_control.sv — Main FSM controller
-// Phase 5A: Memory addressing modes — [Rn], [Rn]+, -[Rn], Disp[Rn], PCDisp, DirectAddr
+// Phase 5B: Indirect + double-displacement addressing modes
 // Handles NOP, HALT, Bcc/BR, MOV, ADD, SUB, CMP, AND, OR, XOR, ADDC, SUBC,
-// NOT, NEG, GETPSW, INC, DEC — with register, immediate, AND memory operands
+// NOT, NEG, GETPSW, INC, DEC — with register, immediate, memory, AND indirect operands
 
 module v60_control
     import v60_pkg::*;
@@ -88,6 +88,8 @@ module v60_control
     logic [31:0] temp_addr;
     logic [31:0] temp_data;
     logic        needs_mem_write;  // Track if ST_EXECUTE2 should go to ST_MEM_WRITE
+    logic        indirect_active;  // Currently performing pointer dereference
+    logic [31:0] temp_src;         // Saved source value during indirect MOV-to-mem
 
     assign state_out = state;
     assign halted    = (state == ST_HALT);
@@ -143,6 +145,8 @@ module v60_control
             temp_addr       <= 32'h0;
             temp_data       <= 32'h0;
             needs_mem_write <= 1'b0;
+            indirect_active <= 1'b0;
+            temp_src        <= 32'h0;
         end else begin
             state <= next_state;
 
@@ -154,18 +158,16 @@ module v60_control
             // Latch temp_addr in ST_EXECUTE when memory operand
             if (state == ST_EXECUTE && (inst_r.is_mem_src || inst_r.is_mem_dst)) begin
                 temp_addr <= eff_addr_comb;
-
-                // For auto-decrement, update the register value in inst_r
-                // (the actual register write happens in the datapath below)
+                indirect_active <= inst_r.needs_indirect;
 
                 // For MOV to memory (write-only): latch source data
+                // For indirect MOV-to-mem, save source in temp_src (temp_data will hold pointer)
                 if (inst_r.is_mem_dst && inst_r.alu_op == ALU_MOV) begin
-                    // Source value: either register or immediate
                     case (inst_r.am_src)
-                        AM_REGISTER:  temp_data <= rf_rd_data_b;
-                        AM_IMMEDIATE: temp_data <= inst_r.imm_value;
-                        AM_IMM_QUICK: temp_data <= inst_r.imm_value;
-                        default:      temp_data <= rf_rd_data_b;
+                        AM_REGISTER:  begin temp_data <= rf_rd_data_b; temp_src <= rf_rd_data_b; end
+                        AM_IMMEDIATE: begin temp_data <= inst_r.imm_value; temp_src <= inst_r.imm_value; end
+                        AM_IMM_QUICK: begin temp_data <= inst_r.imm_value; temp_src <= inst_r.imm_value; end
+                        default:      begin temp_data <= rf_rd_data_b; temp_src <= rf_rd_data_b; end
                     endcase
                 end
 
@@ -179,6 +181,7 @@ module v60_control
             // For Format III memory (INC/DEC [mem]): set needs_mem_write
             if (state == ST_EXECUTE && inst_r.format == FMT_III && inst_r.is_mem_dst) begin
                 temp_addr <= eff_addr_comb;
+                indirect_active <= inst_r.needs_indirect;
                 needs_mem_write <= 1'b1;
             end
 
@@ -187,9 +190,18 @@ module v60_control
                 temp_data <= data_bus_rdata;
             end
 
-            // Latch ALU result in ST_EXECUTE2 for memory write
-            if (state == ST_EXECUTE2 && needs_mem_write) begin
-                temp_data <= alu_result;
+            // ST_EXECUTE2: handle indirect loop-back or ALU result latch
+            if (state == ST_EXECUTE2) begin
+                if (indirect_active) begin
+                    // Pointer dereference: temp_data holds the 32-bit pointer value
+                    temp_addr <= temp_data + inst_r.imm_value2;
+                    indirect_active <= 1'b0;
+                    // For MOV-to-mem: restore source data from temp_src
+                    if (inst_r.is_mem_dst && inst_r.alu_op == ALU_MOV)
+                        temp_data <= temp_src;
+                end else if (needs_mem_write) begin
+                    temp_data <= alu_result;
+                end
             end
 
             // Clear needs_mem_write after write completes
@@ -236,14 +248,14 @@ module v60_control
 
             ST_EXECUTE: begin
                 if (inst_r.is_mem_src) begin
-                    // Need to read source from memory
+                    // Need to read source from memory (or pointer for indirect)
                     next_state = ST_MEM_READ;
                 end else if (inst_r.is_mem_dst) begin
-                    if (inst_r.alu_op == ALU_MOV) begin
-                        // MOV to memory: write-only
+                    if (inst_r.alu_op == ALU_MOV && !inst_r.needs_indirect) begin
+                        // MOV to memory: write-only (non-indirect)
                         next_state = ST_MEM_WRITE;
                     end else begin
-                        // ALU to memory: read-modify-write (or CMP flags-only)
+                        // ALU to memory (RMW/CMP), or indirect MOV: need read first
                         next_state = ST_MEM_READ;
                     end
                 end else if (inst_r.format == FMT_III && inst_r.is_mem_dst) begin
@@ -266,7 +278,13 @@ module v60_control
             end
 
             ST_EXECUTE2: begin
-                if (needs_mem_write)
+                if (indirect_active) begin
+                    // Loop back: pointer fetched, now access actual data
+                    if (inst_r.is_mem_dst && inst_r.alu_op == ALU_MOV)
+                        next_state = ST_MEM_WRITE;  // Indirect MOV-to-mem: write data
+                    else
+                        next_state = ST_MEM_READ;   // Indirect load/RMW: read data
+                end else if (needs_mem_write)
                     next_state = ST_MEM_WRITE;
                 else
                     next_state = ST_WRITEBACK;
@@ -468,7 +486,7 @@ module v60_control
             ST_MEM_READ: begin
                 data_bus_req  = BUS_READ;
                 data_bus_addr = temp_addr;
-                data_bus_size = inst_r.data_size;
+                data_bus_size = indirect_active ? SZ_WORD : inst_r.data_size;
             end
 
             ST_MEM_READ_WAIT: begin
@@ -476,58 +494,61 @@ module v60_control
             end
 
             ST_EXECUTE2: begin
-                // Post-memory-read ALU execution
-                case (inst_r.format)
-                    FMT_I: begin
-                        if (inst_r.is_mem_src) begin
-                            // Source from memory, dest is register
-                            alu_a = temp_data;
-                            rf_rd_addr_b = inst_r.reg_dst;
-                            alu_b = rf_rd_data_b;
-                        end else begin
-                            // Source is register/immediate, dest is memory (RMW)
-                            rf_rd_addr_a = inst_r.reg_src;
-                            case (inst_r.am_src)
-                                AM_REGISTER:  alu_a = rf_rd_data_a;
-                                AM_IMMEDIATE: alu_a = inst_r.imm_value;
-                                AM_IMM_QUICK: alu_a = inst_r.imm_value;
-                                default:      alu_a = rf_rd_data_a;
-                            endcase
-                            alu_b = temp_data;
+                // When indirect_active, we just fetched the pointer — no ALU work yet
+                if (!indirect_active) begin
+                    // Post-memory-read ALU execution
+                    case (inst_r.format)
+                        FMT_I: begin
+                            if (inst_r.is_mem_src) begin
+                                // Source from memory, dest is register
+                                alu_a = temp_data;
+                                rf_rd_addr_b = inst_r.reg_dst;
+                                alu_b = rf_rd_data_b;
+                            end else begin
+                                // Source is register/immediate, dest is memory (RMW)
+                                rf_rd_addr_a = inst_r.reg_src;
+                                case (inst_r.am_src)
+                                    AM_REGISTER:  alu_a = rf_rd_data_a;
+                                    AM_IMMEDIATE: alu_a = inst_r.imm_value;
+                                    AM_IMM_QUICK: alu_a = inst_r.imm_value;
+                                    default:      alu_a = rf_rd_data_a;
+                                endcase
+                                alu_b = temp_data;
+                            end
+
+                            alu_op       = inst_r.alu_op;
+                            alu_size     = inst_r.data_size;
+                            alu_carry_in = psw[PSW_CY];
+
+                            // Write result to register if dest is register
+                            if (inst_r.is_mem_src && inst_r.alu_op != ALU_CMP) begin
+                                rf_wr_en   = 1'b1;
+                                rf_wr_addr = inst_r.reg_dst;
+                                rf_wr_data = alu_result;
+                            end
+
+                            // Update flags
+                            if (inst_r.writes_flags) begin
+                                psw_cc_wr_en   = 1'b1;
+                                psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                            end
                         end
 
-                        alu_op       = inst_r.alu_op;
-                        alu_size     = inst_r.data_size;
-                        alu_carry_in = psw[PSW_CY];
+                        FMT_III: begin
+                            // INC/DEC on memory value
+                            alu_a    = temp_data;
+                            alu_op   = inst_r.alu_op;
+                            alu_size = inst_r.data_size;
 
-                        // Write result to register if dest is register
-                        if (inst_r.is_mem_src && inst_r.alu_op != ALU_CMP) begin
-                            rf_wr_en   = 1'b1;
-                            rf_wr_addr = inst_r.reg_dst;
-                            rf_wr_data = alu_result;
+                            if (inst_r.writes_flags) begin
+                                psw_cc_wr_en   = 1'b1;
+                                psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
+                            end
                         end
 
-                        // Update flags
-                        if (inst_r.writes_flags) begin
-                            psw_cc_wr_en   = 1'b1;
-                            psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
-                        end
-                    end
-
-                    FMT_III: begin
-                        // INC/DEC on memory value
-                        alu_a    = temp_data;
-                        alu_op   = inst_r.alu_op;
-                        alu_size = inst_r.data_size;
-
-                        if (inst_r.writes_flags) begin
-                            psw_cc_wr_en   = 1'b1;
-                            psw_cc_wr_data = {alu_flag_cy, alu_flag_ov, alu_flag_s, alu_flag_z};
-                        end
-                    end
-
-                    default: ;
-                endcase
+                        default: ;
+                    endcase
+                end
             end
 
             ST_MEM_WRITE: begin

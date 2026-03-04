@@ -69,6 +69,30 @@ class V60Asm:
         """Encode mod for Disp32[Rn] (m=0, hi=2): mod = 0x40|reg."""
         return 0x40 | (reg & 0x1F)
 
+    def _encode_mod_dispind8(self, reg):
+        """Encode mod for DispInd8[Rn] (m=0, hi=4): mod = 0x80|reg."""
+        return 0x80 | (reg & 0x1F)
+
+    def _encode_mod_dispind16(self, reg):
+        """Encode mod for DispInd16[Rn] (m=0, hi=5): mod = 0xA0|reg."""
+        return 0xA0 | (reg & 0x1F)
+
+    def _encode_mod_dispind32(self, reg):
+        """Encode mod for DispInd32[Rn] (m=0, hi=6): mod = 0xC0|reg."""
+        return 0xC0 | (reg & 0x1F)
+
+    def _encode_mod_dbldisp8(self, reg):
+        """Encode mod for DblDisp8[Rn] (m=1, hi=0): mod = 0x00|reg."""
+        return 0x00 | (reg & 0x1F)
+
+    def _encode_mod_dbldisp16(self, reg):
+        """Encode mod for DblDisp16[Rn] (m=1, hi=1): mod = 0x20|reg."""
+        return 0x20 | (reg & 0x1F)
+
+    def _encode_mod_dbldisp32(self, reg):
+        """Encode mod for DblDisp32[Rn] (m=1, hi=2): mod = 0x40|reg."""
+        return 0x40 | (reg & 0x1F)
+
     def _size_byte_count(self, size):
         """Return byte count for a data size ('b'=1, 'h'=2, 'w'=4)."""
         return {'b': 1, 'h': 2, 'w': 4}[size]
@@ -167,6 +191,63 @@ class V60Asm:
         self.code.extend([opcode, byte1, mod])
 
     # =========================================================================
+    # Format I: Memory indirect to register (d=1: reg=destination, mod=source)
+    # DispInd modes: m=0, hi=4/5/6
+    # =========================================================================
+    def _fmt1_mem_dispind8_reg(self, mnemonic, size, addr_reg, disp, dst_reg):
+        """DispInd8[Raddr], Rdst — indirect via 8-bit displacement (m=0)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)  # m=0, d=1
+        mod = self._encode_mod_dispind8(addr_reg)
+        self.code.extend([opcode, byte1, mod, disp & 0xFF])
+
+    def _fmt1_mem_dispind16_reg(self, mnemonic, size, addr_reg, disp, dst_reg):
+        """DispInd16[Raddr], Rdst — indirect via 16-bit displacement (m=0)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_dispind16(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+        self.code.extend((disp & 0xFFFF).to_bytes(2, 'little'))
+
+    # Format I: Register to memory indirect (d=0: reg=source, mod=destination)
+    def _fmt1_reg_mem_dispind8(self, mnemonic, size, src_reg, addr_reg, disp):
+        """Rsrc, DispInd8[Raddr] — store via indirect 8-bit displacement (m=0)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (0 << 5) | (src_reg & 0x1F)  # m=0, d=0
+        mod = self._encode_mod_dispind8(addr_reg)
+        self.code.extend([opcode, byte1, mod, disp & 0xFF])
+
+    # =========================================================================
+    # Format I: Double displacement modes (m=1, hi=0/1/2)
+    # =========================================================================
+    def _fmt1_mem_dbldisp8_reg(self, mnemonic, size, addr_reg, disp1, disp2, dst_reg):
+        """DblDisp8[Raddr], Rdst — double displacement 8-bit (m=1)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (1 << 6) | (1 << 5) | (dst_reg & 0x1F)  # m=1, d=1
+        mod = self._encode_mod_dbldisp8(addr_reg)
+        self.code.extend([opcode, byte1, mod, disp1 & 0xFF, disp2 & 0xFF])
+
+    def _fmt1_mem_dbldisp16_reg(self, mnemonic, size, addr_reg, disp1, disp2, dst_reg):
+        """DblDisp16[Raddr], Rdst — double displacement 16-bit (m=1)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (1 << 6) | (1 << 5) | (dst_reg & 0x1F)  # m=1, d=1
+        mod = self._encode_mod_dbldisp16(addr_reg)
+        self.code.extend([opcode, byte1, mod])
+        self.code.extend((disp1 & 0xFFFF).to_bytes(2, 'little'))
+        self.code.extend((disp2 & 0xFFFF).to_bytes(2, 'little'))
+
+    # =========================================================================
+    # Format I: Group7 indirect modes (m=0, mod[7:5]=7, mod[4:0]=24-30)
+    # =========================================================================
+    def _fmt1_mem_directaddr_deferred_reg(self, mnemonic, size, addr, dst_reg):
+        """[addr], Rdst — direct address deferred (m=0, Group7 index 27)."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)  # m=0, d=1
+        mod = 0xE0 | 27  # Group7, index 27 = 0xFB
+        self.code.extend([opcode, byte1, mod])
+        self.code.extend((addr & 0xFFFFFFFF).to_bytes(4, 'little'))
+
+    # =========================================================================
     # Format I: Immediate to memory
     # =========================================================================
     def _fmt1_imm_mem_rind(self, mnemonic, size, imm_val, addr_reg):
@@ -212,6 +293,13 @@ class V60Asm:
         mod = self._encode_mod_disp8(addr_reg)
         self.code.extend([opcode, mod, disp & 0xFF])
 
+    def inc_mem_dispind8(self, size, addr_reg, disp):
+        """INC.size DispInd8[Raddr] — Format III with DispInd8 (m=0, hi=4)."""
+        base = {'b': 0xD8, 'h': 0xDA, 'w': 0xDC}[size]
+        opcode = base | 0  # m=0 for DispInd
+        mod = self._encode_mod_dispind8(addr_reg)
+        self.code.extend([opcode, mod, disp & 0xFF])
+
     # =========================================================================
     # MOV convenience methods (preserved from Phase 2)
     # =========================================================================
@@ -242,6 +330,29 @@ class V60Asm:
 
     def mov_reg_mem_autodec(self, size, src_reg, addr_reg):
         self._fmt1_reg_mem_autodec('mov', size, src_reg, addr_reg)
+
+    # MOV indirect modes
+    def mov_mem_dispind8_reg(self, size, addr_reg, disp, dst_reg):
+        self._fmt1_mem_dispind8_reg('mov', size, addr_reg, disp, dst_reg)
+
+    def mov_mem_dispind16_reg(self, size, addr_reg, disp, dst_reg):
+        self._fmt1_mem_dispind16_reg('mov', size, addr_reg, disp, dst_reg)
+
+    def mov_reg_mem_dispind8(self, size, src_reg, addr_reg, disp):
+        self._fmt1_reg_mem_dispind8('mov', size, src_reg, addr_reg, disp)
+
+    def mov_mem_dbldisp8_reg(self, size, addr_reg, disp1, disp2, dst_reg):
+        self._fmt1_mem_dbldisp8_reg('mov', size, addr_reg, disp1, disp2, dst_reg)
+
+    def mov_mem_dbldisp16_reg(self, size, addr_reg, disp1, disp2, dst_reg):
+        self._fmt1_mem_dbldisp16_reg('mov', size, addr_reg, disp1, disp2, dst_reg)
+
+    def mov_mem_directaddr_deferred_reg(self, size, addr, dst_reg):
+        self._fmt1_mem_directaddr_deferred_reg('mov', size, addr, dst_reg)
+
+    # ADD indirect modes
+    def add_mem_dispind8_reg(self, size, addr_reg, disp, dst_reg):
+        self._fmt1_mem_dispind8_reg('add', size, addr_reg, disp, dst_reg)
 
     # =========================================================================
     # ALU Format I convenience methods
@@ -779,6 +890,137 @@ def build_phase5a_test():
     print(f"  Expected R9  = 0x0000BEEF (half load)")
 
 
+def build_phase5b_test():
+    """Build Phase 5B test: Indirect + double-displacement addressing modes."""
+    a = V60Asm()
+
+    # =====================================================================
+    # Data area layout (base 0x1000, data at 0x2000):
+    #   0x2000: pointer → 0x2100 (target data area)
+    #   0x2004: pointer → 0x2200 (second target)
+    #   0x2100: data = 0xCAFEBABE
+    #   0x2200: data = 0x00000000 (write target)
+    # =====================================================================
+
+    # Setup: R0 = 0x2000 (pointer area base)
+    a.mov_imm_reg('w', 0x00002000, 0)  # R0 = 0x2000
+
+    # Store pointer at 0x2000 → 0x2100
+    a.mov_imm_reg('w', 0x00002100, 1)  # R1 = 0x2100
+    a.mov_reg_mem_rind('w', 1, 0)      # mem[0x2000] = 0x2100
+
+    # Store data at 0x2100 = 0xCAFEBABE
+    a.mov_imm_reg('w', 0xCAFEBABE, 2)  # R2 = 0xCAFEBABE
+    a.mov_reg_mem_rind('w', 2, 1)      # mem[0x2100] = 0xCAFEBABE
+
+    # Store pointer at 0x2004 → 0x2200
+    a.mov_imm_reg('w', 0x00002200, 3)  # R3 = 0x2200
+    a.mov_reg_mem_disp8('w', 3, 0, 4)  # mem[0x2004] = 0x2200
+
+    # Clear destination registers
+    a.mov_imm_reg('w', 0x00000000, 4)  # R4 = 0
+    a.mov_imm_reg('w', 0x00000000, 5)  # R5 = 0
+    a.mov_imm_reg('w', 0x00000000, 6)  # R6 = 0
+    a.mov_imm_reg('w', 0x00000000, 7)  # R7 = 0
+    a.mov_imm_reg('w', 0x00000000, 8)  # R8 = 0
+    a.mov_imm_reg('w', 0x00000000, 9)  # R9 = 0
+    a.mov_imm_reg('w', 0x00000000, 10) # R10 = 0
+
+    # =====================================================================
+    # Test 1: DispInd8 load — MOV.W DispInd8[R0], R4
+    # Pointer at R0+0 = mem[0x2000] = 0x2100, data at [0x2100] = 0xCAFEBABE
+    # Expected: R4 = 0xCAFEBABE
+    # =====================================================================
+    a.mov_mem_dispind8_reg('w', 0, 0, 4)
+
+    # =====================================================================
+    # Test 2: DispInd8 store — MOV.W R2, DispInd8[R0]
+    # Pointer at R0+4 = mem[0x2004] = 0x2200, write R2 to [0x2200]
+    # Expected: mem[0x2200] = 0xCAFEBABE
+    # =====================================================================
+    a.mov_reg_mem_dispind8('w', 2, 0, 4)
+
+    # Verify: load back from 0x2200
+    a.mov_mem_rind_reg('w', 3, 5)      # R5 = mem[R3=0x2200] = 0xCAFEBABE
+
+    # =====================================================================
+    # Test 3: DispInd16 load — MOV.W DispInd16[R0], R6
+    # Pointer at R0+0 = mem[0x2000] = 0x2100, data at [0x2100] = 0xCAFEBABE
+    # Expected: R6 = 0xCAFEBABE
+    # =====================================================================
+    a.mov_mem_dispind16_reg('w', 0, 0, 6)
+
+    # =====================================================================
+    # Test 4: DblDisp8 load — MOV.W DblDisp8(0,8)[R0], R7
+    # Pointer at R0+0 = mem[0x2000] = 0x2100, data at [0x2100+8]
+    # First store known value at 0x2108
+    # =====================================================================
+    a.mov_imm_reg('w', 0x12345678, 11) # R11 = 0x12345678
+    a.mov_imm_reg('w', 0x00002108, 12) # R12 = 0x2108
+    a.mov_reg_mem_rind('w', 11, 12)    # mem[0x2108] = 0x12345678
+    a.mov_mem_dbldisp8_reg('w', 0, 0, 8, 7)  # R7 = mem[mem[R0+0]+8] = mem[0x2108]
+    # Expected: R7 = 0x12345678
+
+    # =====================================================================
+    # Test 5: DblDisp16 load — MOV.W DblDisp16(0,8)[R0], R8
+    # Same as test 4 but with 16-bit displacements
+    # Expected: R8 = 0x12345678
+    # =====================================================================
+    a.mov_mem_dbldisp16_reg('w', 0, 0, 8, 8)
+
+    # =====================================================================
+    # Test 6: DirectAddrDeferred load — MOV.W [0x2000], R9
+    # Pointer at abs addr 0x2000 = 0x2100, data at [0x2100] = 0xCAFEBABE
+    # Expected: R9 = 0xCAFEBABE
+    # =====================================================================
+    a.mov_mem_directaddr_deferred_reg('w', 0x00002000, 9)
+
+    # =====================================================================
+    # Test 7: ADD with indirect source — ADD.W DispInd8[R0], R10
+    # R10 = 0, pointer at R0+0 → 0x2100, data at [0x2100] = 0xCAFEBABE
+    # Expected: R10 = 0 + 0xCAFEBABE = 0xCAFEBABE, flags updated
+    # =====================================================================
+    a.add_mem_dispind8_reg('w', 0, 0, 10)
+    a.getpsw(20)   # R20 = PSW after ADD (S=1)
+
+    # =====================================================================
+    # Test 8: INC via Format III indirect — INC.W DispInd8[R0]
+    # Pointer at R0+0 → 0x2100, data at [0x2100] = 0xCAFEBABE
+    # After: mem[0x2100] = 0xCAFEBABF
+    # =====================================================================
+    a.inc_mem_dispind8('w', 0, 0)
+
+    # Verify: load back from 0x2100
+    a.mov_mem_rind_reg('w', 1, 13)     # R13 = mem[R1=0x2100] = 0xCAFEBABF
+
+    # =====================================================================
+    # Capture final results
+    # =====================================================================
+    a.mov_reg_reg('w', 4, 21)    # R21 = R4 (should be 0xCAFEBABE)
+    a.mov_reg_reg('w', 5, 22)    # R22 = R5 (should be 0xCAFEBABE)
+    a.mov_reg_reg('w', 6, 23)    # R23 = R6 (should be 0xCAFEBABE)
+    a.mov_reg_reg('w', 7, 24)    # R24 = R7 (should be 0x12345678)
+    a.mov_reg_reg('w', 8, 25)    # R25 = R8 (should be 0x12345678)
+    a.mov_reg_reg('w', 9, 26)    # R26 = R9 (should be 0xCAFEBABE)
+    a.mov_reg_reg('w', 10, 27)   # R27 = R10 (should be 0xCAFEBABE)
+
+    # HALT
+    a.halt()
+
+    a.write('tests/phase5b_test.bin')
+
+    print("\nPhase 5B test: Indirect + double-displacement addressing modes")
+    print(f"  Binary size: {len(a.code)} bytes")
+    print(f"  Expected R4  = 0xCAFEBABE (DispInd8 load)")
+    print(f"  Expected R5  = 0xCAFEBABE (DispInd8 store verify)")
+    print(f"  Expected R6  = 0xCAFEBABE (DispInd16 load)")
+    print(f"  Expected R7  = 0x12345678 (DblDisp8 load)")
+    print(f"  Expected R8  = 0x12345678 (DblDisp16 load)")
+    print(f"  Expected R9  = 0xCAFEBABE (DirectAddrDeferred load)")
+    print(f"  Expected R10 = 0xCAFEBABE (ADD via indirect)")
+    print(f"  Expected R13 = 0xCAFEBABF (INC via indirect)")
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'phase3':
         build_phase3_test()
@@ -786,5 +1028,7 @@ if __name__ == '__main__':
         build_phase4_test()
     elif len(sys.argv) > 1 and sys.argv[1] == 'phase5a':
         build_phase5a_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase5b':
+        build_phase5b_test()
     else:
         build_phase2_test()

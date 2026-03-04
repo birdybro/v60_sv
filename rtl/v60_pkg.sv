@@ -343,6 +343,8 @@ package v60_pkg;
         logic           is_mem_dst;   // Destination operand requires memory access
         logic           auto_inc;     // Post-increment side effect
         logic           auto_dec;     // Pre-decrement side effect
+        logic           needs_indirect; // Pointer dereference needed (indirect/dbldisp modes)
+        logic [31:0]    imm_value2;   // Second displacement (DblDisp/PCDblDisp modes)
     } decoded_inst_t;
 
 endpackage

@@ -1,9 +1,10 @@
 // v60_decode.sv — Instruction decoder
-// Phase 5A: Decodes Format V (NOP, HALT), Format IV (Bcc),
+// Phase 5B: Decodes Format V (NOP, HALT), Format IV (Bcc),
 //           Format I (MOV, ADD, SUB, CMP, AND, OR, XOR, ADDC, SUBC, NOT, NEG),
 //           Format III (GETPSW, INC, DEC)
 //           Memory addressing modes: [Rn], [Rn]+, -[Rn], Disp8/16/32[Rn],
-//           PCDisp8/16/32, DirectAddr
+//           PCDisp8/16/32, DirectAddr, DispInd8/16/32, DblDisp8/16/32,
+//           PCDispInd8/16/32, DirectAddrDeferred, PCDblDisp8/16/32
 // Combinational decode from fetch buffer window
 
 /* verilator lint_off UNUSEDSIGNAL */
@@ -182,22 +183,53 @@ module v60_decode
     logic       f1_mod_is_mem;
     logic       f1_mod_auto_inc;
     logic       f1_mod_auto_dec;
+    logic       f1_mod_needs_indirect;
+    logic [31:0] f1_mod_imm2;
 
     assign f1_mod_hi = fmt1_mod_byte[7:5];
     assign f1_mod_lo = fmt1_mod_byte[4:0];
 
     always_comb begin
-        f1_mod_am       = AM_ERROR;
-        f1_mod_reg      = 5'd0;
-        f1_mod_imm      = 32'h0;
-        f1_mod_len      = 6'd1;
-        f1_mod_is_mem   = 1'b0;
-        f1_mod_auto_inc = 1'b0;
-        f1_mod_auto_dec = 1'b0;
+        f1_mod_am              = AM_ERROR;
+        f1_mod_reg             = 5'd0;
+        f1_mod_imm             = 32'h0;
+        f1_mod_len             = 6'd1;
+        f1_mod_is_mem          = 1'b0;
+        f1_mod_auto_inc        = 1'b0;
+        f1_mod_auto_dec        = 1'b0;
+        f1_mod_needs_indirect  = 1'b0;
+        f1_mod_imm2            = 32'h0;
 
         if (fmt1_m) begin
             // m=1 dispatch on mod[7:5]
             case (f1_mod_hi)
+                3'd0: begin  // DblDisp8[Rn] — pointer at Rn+d1, data at [ptr+d2]
+                    f1_mod_am             = AM_DISP16_REG;
+                    f1_mod_reg            = f1_mod_lo;
+                    f1_mod_imm            = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                    f1_mod_imm2           = {{24{ibuf_data[4][7]}}, ibuf_data[4]};
+                    f1_mod_len            = 6'd3;
+                    f1_mod_is_mem         = 1'b1;
+                    f1_mod_needs_indirect = 1'b1;
+                end
+                3'd1: begin  // DblDisp16[Rn]
+                    f1_mod_am             = AM_DISP16_REG;
+                    f1_mod_reg            = f1_mod_lo;
+                    f1_mod_imm            = {{16{ibuf_data[4][7]}}, ibuf_data[4], ibuf_data[3]};
+                    f1_mod_imm2           = {{16{ibuf_data[6][7]}}, ibuf_data[6], ibuf_data[5]};
+                    f1_mod_len            = 6'd5;
+                    f1_mod_is_mem         = 1'b1;
+                    f1_mod_needs_indirect = 1'b1;
+                end
+                3'd2: begin  // DblDisp32[Rn]
+                    f1_mod_am             = AM_DISP32_REG;
+                    f1_mod_reg            = f1_mod_lo;
+                    f1_mod_imm            = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                    f1_mod_imm2           = {ibuf_data[10], ibuf_data[9], ibuf_data[8], ibuf_data[7]};
+                    f1_mod_len            = 6'd9;
+                    f1_mod_is_mem         = 1'b1;
+                    f1_mod_needs_indirect = 1'b1;
+                end
                 3'd3: begin  // Register
                     f1_mod_am  = AM_REGISTER;
                     f1_mod_reg = f1_mod_lo;
@@ -252,6 +284,30 @@ module v60_decode
                     f1_mod_len    = 6'd1;
                     f1_mod_is_mem = 1'b1;
                 end
+                3'd4: begin  // DispInd8[Rn] — pointer at Rn+d, data at [ptr]
+                    f1_mod_am             = AM_DISP16_REG;
+                    f1_mod_reg            = f1_mod_lo;
+                    f1_mod_imm            = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                    f1_mod_len            = 6'd2;
+                    f1_mod_is_mem         = 1'b1;
+                    f1_mod_needs_indirect = 1'b1;
+                end
+                3'd5: begin  // DispInd16[Rn]
+                    f1_mod_am             = AM_DISP16_REG;
+                    f1_mod_reg            = f1_mod_lo;
+                    f1_mod_imm            = {{16{ibuf_data[4][7]}}, ibuf_data[4], ibuf_data[3]};
+                    f1_mod_len            = 6'd3;
+                    f1_mod_is_mem         = 1'b1;
+                    f1_mod_needs_indirect = 1'b1;
+                end
+                3'd6: begin  // DispInd32[Rn]
+                    f1_mod_am             = AM_DISP32_REG;
+                    f1_mod_reg            = f1_mod_lo;
+                    f1_mod_imm            = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                    f1_mod_len            = 6'd5;
+                    f1_mod_is_mem         = 1'b1;
+                    f1_mod_needs_indirect = 1'b1;
+                end
                 3'd7: begin  // Group7 — sub-dispatch on mod[4:0]
                     if (f1_mod_lo <= 5'd15) begin
                         // ImmediateQuick: 4-bit value in mod[3:0]
@@ -287,14 +343,64 @@ module v60_decode
                         f1_mod_am  = AM_IMMEDIATE;
                         f1_mod_imm = fmt1_imm_val;
                         f1_mod_len = 6'd1 + {3'd0, imm_bytes};
+                    end else if (f1_mod_lo == 5'd24) begin
+                        // PCDispInd8
+                        f1_mod_am             = AM_PC_DISP16;
+                        f1_mod_imm            = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                        f1_mod_len            = 6'd2;
+                        f1_mod_is_mem         = 1'b1;
+                        f1_mod_needs_indirect = 1'b1;
+                    end else if (f1_mod_lo == 5'd25) begin
+                        // PCDispInd16
+                        f1_mod_am             = AM_PC_DISP16;
+                        f1_mod_imm            = {{16{ibuf_data[4][7]}}, ibuf_data[4], ibuf_data[3]};
+                        f1_mod_len            = 6'd3;
+                        f1_mod_is_mem         = 1'b1;
+                        f1_mod_needs_indirect = 1'b1;
+                    end else if (f1_mod_lo == 5'd26) begin
+                        // PCDispInd32
+                        f1_mod_am             = AM_PC_DISP32;
+                        f1_mod_imm            = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                        f1_mod_len            = 6'd5;
+                        f1_mod_is_mem         = 1'b1;
+                        f1_mod_needs_indirect = 1'b1;
+                    end else if (f1_mod_lo == 5'd27) begin
+                        // DirectAddrDeferred — pointer at absolute address
+                        f1_mod_am             = AM_DIRECT_ADDR;
+                        f1_mod_imm            = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                        f1_mod_len            = 6'd5;
+                        f1_mod_is_mem         = 1'b1;
+                        f1_mod_needs_indirect = 1'b1;
+                    end else if (f1_mod_lo == 5'd28) begin
+                        // PCDblDisp8
+                        f1_mod_am             = AM_PC_DISP16;
+                        f1_mod_imm            = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                        f1_mod_imm2           = {{24{ibuf_data[4][7]}}, ibuf_data[4]};
+                        f1_mod_len            = 6'd3;
+                        f1_mod_is_mem         = 1'b1;
+                        f1_mod_needs_indirect = 1'b1;
+                    end else if (f1_mod_lo == 5'd29) begin
+                        // PCDblDisp16
+                        f1_mod_am             = AM_PC_DISP16;
+                        f1_mod_imm            = {{16{ibuf_data[4][7]}}, ibuf_data[4], ibuf_data[3]};
+                        f1_mod_imm2           = {{16{ibuf_data[6][7]}}, ibuf_data[6], ibuf_data[5]};
+                        f1_mod_len            = 6'd5;
+                        f1_mod_is_mem         = 1'b1;
+                        f1_mod_needs_indirect = 1'b1;
+                    end else if (f1_mod_lo == 5'd30) begin
+                        // PCDblDisp32
+                        f1_mod_am             = AM_PC_DISP32;
+                        f1_mod_imm            = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
+                        f1_mod_imm2           = {ibuf_data[10], ibuf_data[9], ibuf_data[8], ibuf_data[7]};
+                        f1_mod_len            = 6'd9;
+                        f1_mod_is_mem         = 1'b1;
+                        f1_mod_needs_indirect = 1'b1;
                     end else begin
-                        // Other Group7 entries (Phase 5B: indirect modes)
                         f1_mod_am  = AM_ERROR;
                         f1_mod_len = 6'd1;
                     end
                 end
                 default: begin
-                    // hi=4,5,6: Indirect modes (Phase 5B)
                     f1_mod_am  = AM_ERROR;
                     f1_mod_len = 6'd1;
                 end
@@ -314,6 +420,8 @@ module v60_decode
     logic       f3_mod_is_mem;
     logic       f3_mod_auto_inc;
     logic       f3_mod_auto_dec;
+    logic       f3_mod_needs_indirect;
+    logic [31:0] f3_mod_imm2;
 
     assign f3_mod_hi = fmt3_mod_byte[7:5];
     assign f3_mod_lo = fmt3_mod_byte[4:0];
@@ -332,17 +440,46 @@ module v60_decode
     end
 
     always_comb begin
-        f3_mod_am       = AM_ERROR;
-        f3_mod_reg      = 5'd0;
-        f3_mod_imm      = 32'h0;
-        f3_mod_len      = 6'd1;
-        f3_mod_is_mem   = 1'b0;
-        f3_mod_auto_inc = 1'b0;
-        f3_mod_auto_dec = 1'b0;
+        f3_mod_am              = AM_ERROR;
+        f3_mod_reg             = 5'd0;
+        f3_mod_imm             = 32'h0;
+        f3_mod_len             = 6'd1;
+        f3_mod_is_mem          = 1'b0;
+        f3_mod_auto_inc        = 1'b0;
+        f3_mod_auto_dec        = 1'b0;
+        f3_mod_needs_indirect  = 1'b0;
+        f3_mod_imm2            = 32'h0;
 
         if (fmt3_m) begin
             // m=1 dispatch
             case (f3_mod_hi)
+                3'd0: begin  // DblDisp8[Rn]
+                    f3_mod_am             = AM_DISP16_REG;
+                    f3_mod_reg            = f3_mod_lo;
+                    f3_mod_imm            = {{24{ibuf_data[2][7]}}, ibuf_data[2]};
+                    f3_mod_imm2           = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                    f3_mod_len            = 6'd3;
+                    f3_mod_is_mem         = 1'b1;
+                    f3_mod_needs_indirect = 1'b1;
+                end
+                3'd1: begin  // DblDisp16[Rn]
+                    f3_mod_am             = AM_DISP16_REG;
+                    f3_mod_reg            = f3_mod_lo;
+                    f3_mod_imm            = {{16{ibuf_data[3][7]}}, ibuf_data[3], ibuf_data[2]};
+                    f3_mod_imm2           = {{16{ibuf_data[5][7]}}, ibuf_data[5], ibuf_data[4]};
+                    f3_mod_len            = 6'd5;
+                    f3_mod_is_mem         = 1'b1;
+                    f3_mod_needs_indirect = 1'b1;
+                end
+                3'd2: begin  // DblDisp32[Rn]
+                    f3_mod_am             = AM_DISP32_REG;
+                    f3_mod_reg            = f3_mod_lo;
+                    f3_mod_imm            = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                    f3_mod_imm2           = {ibuf_data[9], ibuf_data[8], ibuf_data[7], ibuf_data[6]};
+                    f3_mod_len            = 6'd9;
+                    f3_mod_is_mem         = 1'b1;
+                    f3_mod_needs_indirect = 1'b1;
+                end
                 3'd3: begin  // Register
                     f3_mod_am  = AM_REGISTER;
                     f3_mod_reg = f3_mod_lo;
@@ -397,6 +534,30 @@ module v60_decode
                     f3_mod_len    = 6'd1;
                     f3_mod_is_mem = 1'b1;
                 end
+                3'd4: begin  // DispInd8[Rn]
+                    f3_mod_am             = AM_DISP16_REG;
+                    f3_mod_reg            = f3_mod_lo;
+                    f3_mod_imm            = {{24{ibuf_data[2][7]}}, ibuf_data[2]};
+                    f3_mod_len            = 6'd2;
+                    f3_mod_is_mem         = 1'b1;
+                    f3_mod_needs_indirect = 1'b1;
+                end
+                3'd5: begin  // DispInd16[Rn]
+                    f3_mod_am             = AM_DISP16_REG;
+                    f3_mod_reg            = f3_mod_lo;
+                    f3_mod_imm            = {{16{ibuf_data[3][7]}}, ibuf_data[3], ibuf_data[2]};
+                    f3_mod_len            = 6'd3;
+                    f3_mod_is_mem         = 1'b1;
+                    f3_mod_needs_indirect = 1'b1;
+                end
+                3'd6: begin  // DispInd32[Rn]
+                    f3_mod_am             = AM_DISP32_REG;
+                    f3_mod_reg            = f3_mod_lo;
+                    f3_mod_imm            = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                    f3_mod_len            = 6'd5;
+                    f3_mod_is_mem         = 1'b1;
+                    f3_mod_needs_indirect = 1'b1;
+                end
                 3'd7: begin  // Group7
                     if (f3_mod_lo <= 5'd15) begin
                         f3_mod_am  = AM_IMM_QUICK;
@@ -425,6 +586,58 @@ module v60_decode
                         f3_mod_imm    = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
                         f3_mod_len    = 6'd5;
                         f3_mod_is_mem = 1'b1;
+                    end else if (f3_mod_lo == 5'd24) begin
+                        // PCDispInd8
+                        f3_mod_am             = AM_PC_DISP16;
+                        f3_mod_imm            = {{24{ibuf_data[2][7]}}, ibuf_data[2]};
+                        f3_mod_len            = 6'd2;
+                        f3_mod_is_mem         = 1'b1;
+                        f3_mod_needs_indirect = 1'b1;
+                    end else if (f3_mod_lo == 5'd25) begin
+                        // PCDispInd16
+                        f3_mod_am             = AM_PC_DISP16;
+                        f3_mod_imm            = {{16{ibuf_data[3][7]}}, ibuf_data[3], ibuf_data[2]};
+                        f3_mod_len            = 6'd3;
+                        f3_mod_is_mem         = 1'b1;
+                        f3_mod_needs_indirect = 1'b1;
+                    end else if (f3_mod_lo == 5'd26) begin
+                        // PCDispInd32
+                        f3_mod_am             = AM_PC_DISP32;
+                        f3_mod_imm            = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                        f3_mod_len            = 6'd5;
+                        f3_mod_is_mem         = 1'b1;
+                        f3_mod_needs_indirect = 1'b1;
+                    end else if (f3_mod_lo == 5'd27) begin
+                        // DirectAddrDeferred
+                        f3_mod_am             = AM_DIRECT_ADDR;
+                        f3_mod_imm            = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                        f3_mod_len            = 6'd5;
+                        f3_mod_is_mem         = 1'b1;
+                        f3_mod_needs_indirect = 1'b1;
+                    end else if (f3_mod_lo == 5'd28) begin
+                        // PCDblDisp8
+                        f3_mod_am             = AM_PC_DISP16;
+                        f3_mod_imm            = {{24{ibuf_data[2][7]}}, ibuf_data[2]};
+                        f3_mod_imm2           = {{24{ibuf_data[3][7]}}, ibuf_data[3]};
+                        f3_mod_len            = 6'd3;
+                        f3_mod_is_mem         = 1'b1;
+                        f3_mod_needs_indirect = 1'b1;
+                    end else if (f3_mod_lo == 5'd29) begin
+                        // PCDblDisp16
+                        f3_mod_am             = AM_PC_DISP16;
+                        f3_mod_imm            = {{16{ibuf_data[3][7]}}, ibuf_data[3], ibuf_data[2]};
+                        f3_mod_imm2           = {{16{ibuf_data[5][7]}}, ibuf_data[5], ibuf_data[4]};
+                        f3_mod_len            = 6'd5;
+                        f3_mod_is_mem         = 1'b1;
+                        f3_mod_needs_indirect = 1'b1;
+                    end else if (f3_mod_lo == 5'd30) begin
+                        // PCDblDisp32
+                        f3_mod_am             = AM_PC_DISP32;
+                        f3_mod_imm            = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+                        f3_mod_imm2           = {ibuf_data[9], ibuf_data[8], ibuf_data[7], ibuf_data[6]};
+                        f3_mod_len            = 6'd9;
+                        f3_mod_is_mem         = 1'b1;
+                        f3_mod_needs_indirect = 1'b1;
                     end else begin
                         f3_mod_am  = AM_ERROR;
                         f3_mod_len = 6'd1;
@@ -501,6 +714,9 @@ module v60_decode
             decoded.dir       = fmt1_d;
 
             // Direction determines source/destination assignment
+            decoded.needs_indirect = f1_mod_needs_indirect;
+            decoded.imm_value2     = f1_mod_imm2;
+
             if (fmt1_d == 1'b0) begin
                 // d=0: reg field is source, mod field is destination
                 decoded.am_src    = AM_REGISTER;
@@ -538,100 +754,114 @@ module v60_decode
         // GETPSW (0xF6/0xF7)
         // =====================================================================
         end else if (opcode == OP_GETPSW_0 || opcode == OP_GETPSW_1) begin
-            decoded.format     = FMT_III;
-            decoded.is_getpsw  = 1'b1;
-            decoded.data_size  = SZ_WORD;
-            decoded.am_dst     = f3_mod_am;
-            decoded.reg_dst    = f3_mod_reg;
-            decoded.imm_value  = f3_mod_imm;
-            decoded.is_mem_dst = f3_mod_is_mem;
-            decoded.auto_inc   = f3_mod_auto_inc;
-            decoded.auto_dec   = f3_mod_auto_dec;
-            decoded.inst_len   = 6'd1 + f3_mod_len;
-            decode_valid       = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+            decoded.format         = FMT_III;
+            decoded.is_getpsw      = 1'b1;
+            decoded.data_size      = SZ_WORD;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
 
         // =====================================================================
         // Format III: INC/DEC (opcode LSB = m bit)
         // DEC: 0xD0-0xD5, INC: 0xD8-0xDD
         // =====================================================================
         end else if (opcode == OP_INC_B_0 || opcode == OP_INC_B_1) begin
-            decoded.format      = FMT_III;
-            decoded.alu_op      = ALU_INC;
-            decoded.data_size   = SZ_BYTE;
-            decoded.writes_flags = 1'b1;
-            decoded.am_dst      = f3_mod_am;
-            decoded.reg_dst     = f3_mod_reg;
-            decoded.imm_value   = f3_mod_imm;
-            decoded.is_mem_dst  = f3_mod_is_mem;
-            decoded.auto_inc    = f3_mod_auto_inc;
-            decoded.auto_dec    = f3_mod_auto_dec;
-            decoded.inst_len    = 6'd1 + f3_mod_len;
-            decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+            decoded.format         = FMT_III;
+            decoded.alu_op         = ALU_INC;
+            decoded.data_size      = SZ_BYTE;
+            decoded.writes_flags   = 1'b1;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_INC_H_0 || opcode == OP_INC_H_1) begin
-            decoded.format      = FMT_III;
-            decoded.alu_op      = ALU_INC;
-            decoded.data_size   = SZ_HALF;
-            decoded.writes_flags = 1'b1;
-            decoded.am_dst      = f3_mod_am;
-            decoded.reg_dst     = f3_mod_reg;
-            decoded.imm_value   = f3_mod_imm;
-            decoded.is_mem_dst  = f3_mod_is_mem;
-            decoded.auto_inc    = f3_mod_auto_inc;
-            decoded.auto_dec    = f3_mod_auto_dec;
-            decoded.inst_len    = 6'd1 + f3_mod_len;
-            decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+            decoded.format         = FMT_III;
+            decoded.alu_op         = ALU_INC;
+            decoded.data_size      = SZ_HALF;
+            decoded.writes_flags   = 1'b1;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_INC_W_0 || opcode == OP_INC_W_1) begin
-            decoded.format      = FMT_III;
-            decoded.alu_op      = ALU_INC;
-            decoded.data_size   = SZ_WORD;
-            decoded.writes_flags = 1'b1;
-            decoded.am_dst      = f3_mod_am;
-            decoded.reg_dst     = f3_mod_reg;
-            decoded.imm_value   = f3_mod_imm;
-            decoded.is_mem_dst  = f3_mod_is_mem;
-            decoded.auto_inc    = f3_mod_auto_inc;
-            decoded.auto_dec    = f3_mod_auto_dec;
-            decoded.inst_len    = 6'd1 + f3_mod_len;
-            decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+            decoded.format         = FMT_III;
+            decoded.alu_op         = ALU_INC;
+            decoded.data_size      = SZ_WORD;
+            decoded.writes_flags   = 1'b1;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_DEC_B_0 || opcode == OP_DEC_B_1) begin
-            decoded.format      = FMT_III;
-            decoded.alu_op      = ALU_DEC;
-            decoded.data_size   = SZ_BYTE;
-            decoded.writes_flags = 1'b1;
-            decoded.am_dst      = f3_mod_am;
-            decoded.reg_dst     = f3_mod_reg;
-            decoded.imm_value   = f3_mod_imm;
-            decoded.is_mem_dst  = f3_mod_is_mem;
-            decoded.auto_inc    = f3_mod_auto_inc;
-            decoded.auto_dec    = f3_mod_auto_dec;
-            decoded.inst_len    = 6'd1 + f3_mod_len;
-            decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+            decoded.format         = FMT_III;
+            decoded.alu_op         = ALU_DEC;
+            decoded.data_size      = SZ_BYTE;
+            decoded.writes_flags   = 1'b1;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_DEC_H_0 || opcode == OP_DEC_H_1) begin
-            decoded.format      = FMT_III;
-            decoded.alu_op      = ALU_DEC;
-            decoded.data_size   = SZ_HALF;
-            decoded.writes_flags = 1'b1;
-            decoded.am_dst      = f3_mod_am;
-            decoded.reg_dst     = f3_mod_reg;
-            decoded.imm_value   = f3_mod_imm;
-            decoded.is_mem_dst  = f3_mod_is_mem;
-            decoded.auto_inc    = f3_mod_auto_inc;
-            decoded.auto_dec    = f3_mod_auto_dec;
-            decoded.inst_len    = 6'd1 + f3_mod_len;
-            decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+            decoded.format         = FMT_III;
+            decoded.alu_op         = ALU_DEC;
+            decoded.data_size      = SZ_HALF;
+            decoded.writes_flags   = 1'b1;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
         end else if (opcode == OP_DEC_W_0 || opcode == OP_DEC_W_1) begin
-            decoded.format      = FMT_III;
-            decoded.alu_op      = ALU_DEC;
-            decoded.data_size   = SZ_WORD;
-            decoded.writes_flags = 1'b1;
-            decoded.am_dst      = f3_mod_am;
-            decoded.reg_dst     = f3_mod_reg;
-            decoded.imm_value   = f3_mod_imm;
-            decoded.is_mem_dst  = f3_mod_is_mem;
-            decoded.auto_inc    = f3_mod_auto_inc;
-            decoded.auto_dec    = f3_mod_auto_dec;
-            decoded.inst_len    = 6'd1 + f3_mod_len;
-            decode_valid        = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+            decoded.format         = FMT_III;
+            decoded.alu_op         = ALU_DEC;
+            decoded.data_size      = SZ_WORD;
+            decoded.writes_flags   = 1'b1;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.auto_inc       = f3_mod_auto_inc;
+            decoded.auto_dec       = f3_mod_auto_dec;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
 
         // =====================================================================
         // Format I: Recognize 0x80-0xBF range even for Format II encoding
