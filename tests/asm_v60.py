@@ -13,15 +13,29 @@ class V60Asm:
     _FMT1_OPCODES = {
         'mov':  {'b': 0x09, 'h': 0x1B, 'w': 0x2D},
         'add':  {'b': 0x80, 'h': 0x82, 'w': 0x84},
+        'mul':  {'b': 0x81, 'h': 0x83, 'w': 0x85},
         'or':   {'b': 0x88, 'h': 0x8A, 'w': 0x8C},
+        'rot':  {'b': 0x89, 'h': 0x8B, 'w': 0x8D},
         'addc': {'b': 0x90, 'h': 0x92, 'w': 0x94},
+        'mulu': {'b': 0x91, 'h': 0x93, 'w': 0x95},
         'subc': {'b': 0x98, 'h': 0x9A, 'w': 0x9C},
+        'rotc': {'b': 0x99, 'h': 0x9B, 'w': 0x9D},
         'and':  {'b': 0xA0, 'h': 0xA2, 'w': 0xA4},
+        'div':  {'b': 0xA1, 'h': 0xA3, 'w': 0xA5},
         'sub':  {'b': 0xA8, 'h': 0xAA, 'w': 0xAC},
+        'shl':  {'b': 0xA9, 'h': 0xAB, 'w': 0xAD},
         'xor':  {'b': 0xB0, 'h': 0xB2, 'w': 0xB4},
+        'divu': {'b': 0xB1, 'h': 0xB3, 'w': 0xB5},
         'cmp':  {'b': 0xB8, 'h': 0xBA, 'w': 0xBC},
+        'sha':  {'b': 0xB9, 'h': 0xBB, 'w': 0xBD},
         'not':  {'b': 0x38, 'h': 0x3A, 'w': 0x3C},
         'neg':  {'b': 0x39, 'h': 0x3B, 'w': 0x3D},
+        'rem':  {'b': 0x50, 'h': 0x52, 'w': 0x54},
+        'remu': {'b': 0x51, 'h': 0x53, 'w': 0x55},
+        'test1': {'w': 0x87},
+        'set1':  {'w': 0x97},
+        'clr1':  {'w': 0xA7},
+        'not1':  {'w': 0xB7},
     }
 
     def __init__(self):
@@ -599,6 +613,88 @@ class V60Asm:
         opcode = 0xF7  # GETPSW with m=1
         mod = self._encode_mod_register(dst_reg)
         self.code.extend([opcode, mod])
+
+    # =========================================================================
+    # Phase 7: Shift/rotate/bit ops helpers
+    # For shift/rotate: source (count) is always byte, even for .H/.W
+    # =========================================================================
+    def _fmt1_shift_imm_reg(self, mnemonic, size, count_byte, dst_reg):
+        """Format I shift/rotate: #count(byte), Rdst.
+        d=1 (reg=destination), m=0 (mod=immediate source).
+        Source dim is always BYTE, so only 1 byte of immediate."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_immediate()
+        self.code.extend([opcode, byte1, mod, count_byte & 0xFF])
+
+    def _fmt1_shift_immq_reg(self, mnemonic, size, quick_val, dst_reg):
+        """Format I shift/rotate: #quick, Rdst. Source dim always byte."""
+        opcode = self._FMT1_OPCODES[mnemonic][size]
+        byte1 = (0 << 6) | (1 << 5) | (dst_reg & 0x1F)
+        mod = self._encode_mod_imm_quick(quick_val)
+        self.code.extend([opcode, byte1, mod])
+
+    # MUL/MULU/DIV/DIVU/REM/REMU convenience methods
+    def mul_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('mul', size, src_reg, dst_reg)
+    def mul_imm_reg(self, size, imm_val, dst_reg):
+        self._fmt1_imm_reg('mul', size, imm_val, dst_reg)
+    def mulu_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('mulu', size, src_reg, dst_reg)
+    def mulu_imm_reg(self, size, imm_val, dst_reg):
+        self._fmt1_imm_reg('mulu', size, imm_val, dst_reg)
+    def div_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('div', size, src_reg, dst_reg)
+    def div_imm_reg(self, size, imm_val, dst_reg):
+        self._fmt1_imm_reg('div', size, imm_val, dst_reg)
+    def divu_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('divu', size, src_reg, dst_reg)
+    def divu_imm_reg(self, size, imm_val, dst_reg):
+        self._fmt1_imm_reg('divu', size, imm_val, dst_reg)
+    def rem_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('rem', size, src_reg, dst_reg)
+    def rem_imm_reg(self, size, imm_val, dst_reg):
+        self._fmt1_imm_reg('rem', size, imm_val, dst_reg)
+    def remu_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('remu', size, src_reg, dst_reg)
+    def remu_imm_reg(self, size, imm_val, dst_reg):
+        self._fmt1_imm_reg('remu', size, imm_val, dst_reg)
+
+    # Shift/Rotate convenience methods (source is always byte)
+    def shl_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('shl', size, src_reg, dst_reg)
+    def shl_imm_reg(self, size, count, dst_reg):
+        self._fmt1_shift_imm_reg('shl', size, count, dst_reg)
+    def sha_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('sha', size, src_reg, dst_reg)
+    def sha_imm_reg(self, size, count, dst_reg):
+        self._fmt1_shift_imm_reg('sha', size, count, dst_reg)
+    def rot_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('rot', size, src_reg, dst_reg)
+    def rot_imm_reg(self, size, count, dst_reg):
+        self._fmt1_shift_imm_reg('rot', size, count, dst_reg)
+    def rotc_reg_reg(self, size, src_reg, dst_reg):
+        self._fmt1_reg_reg('rotc', size, src_reg, dst_reg)
+    def rotc_imm_reg(self, size, count, dst_reg):
+        self._fmt1_shift_imm_reg('rotc', size, count, dst_reg)
+
+    # Bit operations (word only)
+    def set1_reg_reg(self, src_reg, dst_reg):
+        self._fmt1_reg_reg('set1', 'w', src_reg, dst_reg)
+    def set1_imm_reg(self, bit_pos, dst_reg):
+        self._fmt1_imm_reg('set1', 'w', bit_pos, dst_reg)
+    def clr1_reg_reg(self, src_reg, dst_reg):
+        self._fmt1_reg_reg('clr1', 'w', src_reg, dst_reg)
+    def clr1_imm_reg(self, bit_pos, dst_reg):
+        self._fmt1_imm_reg('clr1', 'w', bit_pos, dst_reg)
+    def not1_reg_reg(self, src_reg, dst_reg):
+        self._fmt1_reg_reg('not1', 'w', src_reg, dst_reg)
+    def not1_imm_reg(self, bit_pos, dst_reg):
+        self._fmt1_imm_reg('not1', 'w', bit_pos, dst_reg)
+    def test1_reg_reg(self, src_reg, dst_reg):
+        self._fmt1_reg_reg('test1', 'w', src_reg, dst_reg)
+    def test1_imm_reg(self, bit_pos, dst_reg):
+        self._fmt1_imm_reg('test1', 'w', bit_pos, dst_reg)
 
     # =========================================================================
     # Raw data embedding
@@ -1604,6 +1700,140 @@ def build_phase6_ext_test():
     print(f"    R10=0xDDDDAAAA R20=0xEEEE2222 R28=0xFF282828")
 
 
+def build_phase7_test():
+    """Build Phase 7 test: Multiply, divide, shifts, rotates, bit ops."""
+    a = V60Asm()
+
+    # Setup registers with known values
+    a.mov_imm_reg('w', 3, 0)         # R0 = 3
+    a.mov_imm_reg('w', 4, 1)         # R1 = 4
+
+    # Test 1: MUL.B R0, R1 → R1 = (int8)3 * (int8)4 = 12
+    a.mul_reg_reg('b', 0, 1)
+    a.getpsw(20)                      # R20 = PSW (Z=0, S=0, OV=0)
+
+    # Test 2: MUL.W with overflow — large values
+    a.mov_imm_reg('w', 0x10000, 2)   # R2 = 0x10000
+    a.mov_imm_reg('w', 0x10000, 3)   # R3 = 0x10000
+    a.mul_reg_reg('w', 2, 3)         # R3 = 0x10000 * 0x10000 = 0 (low 32), OV=1
+    a.getpsw(21)                      # R21 = PSW (Z=1, OV=1)
+
+    # Test 3: MULU.W unsigned
+    a.mov_imm_reg('w', 5, 4)         # R4 = 5
+    a.mov_imm_reg('w', 7, 5)         # R5 = 7
+    a.mulu_reg_reg('w', 4, 5)        # R5 = 5*7 = 35
+    a.getpsw(22)                      # R22 = PSW
+
+    # Test 4: DIV.W normal — 20/5=4
+    a.mov_imm_reg('w', 5, 6)         # R6 = 5 (divisor)
+    a.mov_imm_reg('w', 20, 7)        # R7 = 20 (dividend)
+    a.div_reg_reg('w', 6, 7)         # R7 = 20/5 = 4
+
+    # Test 5: DIV.W by zero — result unchanged
+    a.mov_imm_reg('w', 0, 6)         # R6 = 0
+    a.mov_imm_reg('w', 42, 8)        # R8 = 42
+    a.div_reg_reg('w', 6, 8)         # R8 = 42 (unchanged, div by 0)
+
+    # Test 6: DIV.B overflow — 0x80 / 0xFF (MIN_INT8 / -1)
+    a.mov_imm_reg('b', 0xFF, 6)      # R6 = 0xFF (= -1 as int8)
+    a.mov_imm_reg('b', 0x80, 9)      # R9 = 0x80 (= -128 as int8)
+    a.div_reg_reg('b', 6, 9)         # R9 = 0x80 (unchanged, OV=1)
+    a.getpsw(23)                      # R23 = PSW (OV=1)
+
+    # Test 7: DIVU.W — 20/3=6
+    a.mov_imm_reg('w', 3, 6)         # R6 = 3
+    a.mov_imm_reg('w', 20, 10)       # R10 = 20
+    a.divu_reg_reg('w', 6, 10)       # R10 = 20/3 = 6
+
+    # Test 8: REM.W — 20%3=2
+    a.mov_imm_reg('w', 3, 6)         # R6 = 3
+    a.mov_imm_reg('w', 20, 11)       # R11 = 20
+    a.rem_reg_reg('w', 6, 11)        # R11 = 20%3 = 2
+
+    # Test 9: REMU.W — 20%3=2
+    a.mov_imm_reg('w', 3, 6)         # R6 = 3
+    a.mov_imm_reg('w', 20, 12)       # R12 = 20
+    a.remu_reg_reg('w', 6, 12)       # R12 = 20%3 = 2
+
+    # Test 10: SHL.W left by 4
+    a.mov_imm_reg('w', 0x12345678, 13)  # R13 = 0x12345678
+    a.shl_imm_reg('w', 4, 13)           # R13 <<= 4 = 0x23456780
+
+    # Test 11: SHL.W right (negative count) — logical right shift by 4
+    a.mov_imm_reg('w', 0x12345678, 14)  # R14 = 0x12345678
+    a.shl_imm_reg('w', 0xFC, 14)        # count = -4 (0xFC), R14 >>= 4 = 0x01234567
+
+    # Test 12: SHA.W right — arithmetic right shift of negative number
+    a.mov_imm_reg('w', 0x80000010, 15)  # R15 = 0x80000010 (negative)
+    a.sha_imm_reg('w', 0xFC, 15)        # count = -4, R15 >>a= 4 = 0xF8000001
+
+    # Test 13: SHA.W left — check OV
+    a.mov_imm_reg('w', 0x40000000, 16)  # R16 = 0x40000000
+    a.sha_imm_reg('w', 1, 16)           # R16 <<= 1 = 0x80000000, OV=1 (sign changed)
+    a.getpsw(24)                         # R24 = PSW (OV=1, S=1)
+
+    # Test 14: ROT.W left by 4
+    a.mov_imm_reg('w', 0xF0000001, 17)  # R17 = 0xF0000001
+    a.rot_imm_reg('w', 4, 17)           # rotate left 4 = 0x0000001F
+
+    # Test 15: ROT.W right (negative count) by 4
+    a.mov_imm_reg('w', 0x0000001F, 18)  # R18 = 0x0000001F
+    a.rot_imm_reg('w', 0xFC, 18)        # count = -4, rotate right 4 = 0xF0000001
+
+    # Test 16: ROTC.B — carry participates in rotation
+    # First set carry with a CMP that generates borrow
+    a.mov_imm_reg('w', 0, 6)            # R6 = 0
+    a.cmp_imm_reg('w', 1, 6)            # 0 - 1 → CY=1
+    a.mov_imm_reg('b', 0x01, 19)        # R19 = 0x01
+    a.rotc_imm_reg('b', 1, 19)          # rotc left 1: CY(1)->bit0, bit7(0)->CY
+    # R19 should be 0x03 (old CY=1 shifted into bit0, 0x01<<1=0x02, |1=0x03)
+
+    # Test 17: SET1 — set bit 3 of 0
+    a.mov_imm_reg('w', 3, 0)            # R0 = 3 (bit position)
+    a.mov_imm_reg('w', 0, 1)            # R1 = 0
+    a.set1_reg_reg(0, 1)                # R1 = 0 | (1<<3) = 8, CY=0(was clear), Z=1
+    a.getpsw(25)                         # R25 = PSW
+
+    # Test 18: CLR1 — clear bit 3 of 0xFF
+    a.mov_imm_reg('w', 3, 0)            # R0 = 3
+    a.mov_imm_reg('w', 0xFF, 2)         # R2 = 0xFF
+    a.clr1_reg_reg(0, 2)                # R2 = 0xFF & ~(1<<3) = 0xF7, CY=1(was set), Z=0
+
+    # Test 19: NOT1 — toggle bit 0 of 0xFF
+    a.mov_imm_reg('w', 0, 0)            # R0 = 0 (bit position)
+    a.mov_imm_reg('w', 0xFF, 3)         # R3 = 0xFF
+    a.not1_reg_reg(0, 3)                # R3 = 0xFF ^ (1<<0) = 0xFE, CY=1(was set), Z=0
+
+    # Test 20: TEST1 — test bit 1 of 0x02, no writeback
+    a.mov_imm_reg('w', 1, 0)            # R0 = 1 (bit position)
+    a.mov_imm_reg('w', 0x02, 4)         # R4 = 0x02
+    a.test1_reg_reg(0, 4)               # CY=1(bit 1 is set), Z=0, R4 unchanged
+    a.getpsw(26)                         # R26 = PSW
+
+    # Test 21: MUL.H — halfword multiply
+    a.mov_imm_reg('h', 100, 5)          # R5 = 100
+    a.mov_imm_reg('h', 200, 6)          # R6 = 200
+    a.mul_reg_reg('h', 5, 6)            # R6 = 100*200 = 20000 (fits in 16 bits)
+
+    # Test 22: SHL.B — byte shift
+    a.mov_imm_reg('b', 0x0F, 7)         # R7 = 0x0F
+    a.shl_imm_reg('b', 2, 7)            # R7 = 0x0F << 2 = 0x3C
+
+    # Test 23: CMP after bit op — verify S,OV preserved
+    # Set S and OV with a SHA that causes OV
+    a.mov_imm_reg('w', 0x40000000, 8)   # R8 = 0x40000000
+    a.sha_imm_reg('w', 1, 8)            # R8 = 0x80000000, S=1, OV=1
+    # Now do SET1 which should NOT change S or OV
+    a.mov_imm_reg('w', 0, 0)            # R0 = 0 (bit position)
+    a.mov_imm_reg('w', 0, 9)            # R9 = 0
+    a.set1_reg_reg(0, 9)                # R9 = 1, Z=1, CY=0, S=1(preserved), OV=1(preserved)
+    a.getpsw(27)                         # R27 = PSW (should have S=1, OV=1)
+
+    a.halt()
+    a.write('tests/phase7_test.bin')
+    print("Phase 7 test: 23 test cases")
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'phase3':
         build_phase3_test()
@@ -1617,5 +1847,7 @@ if __name__ == '__main__':
         build_phase6_test()
     elif len(sys.argv) > 1 and sys.argv[1] == 'phase6ext':
         build_phase6_ext_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase7':
+        build_phase7_test()
     else:
         build_phase2_test()

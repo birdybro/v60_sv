@@ -1,8 +1,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 // v60_control.sv — Main FSM controller
-// Phase 6: Control flow instructions (JMP, JSR, BSR, RET, PREPARE, DISPOSE,
-//          PUSH, POP, PUSHM, POPM)
+// Phase 7: Multiply, divide, shifts, rotates, bit ops
 
 module v60_control
     import v60_pkg::*;
@@ -49,7 +48,7 @@ module v60_control
     output data_size_t  alu_size,
     output logic [31:0] alu_a,
     output logic [31:0] alu_b,
-    output logic        alu_carry_in,
+    output logic [3:0]  alu_flags_in,
     input  logic [31:0] alu_result,
     input  logic        alu_flag_z,
     input  logic        alu_flag_s,
@@ -220,7 +219,7 @@ module v60_control
                             endcase
                         end
 
-                        if (inst_r.is_mem_dst && inst_r.alu_op != ALU_MOV && inst_r.alu_op != ALU_CMP)
+                        if (inst_r.is_mem_dst && inst_r.alu_op != ALU_MOV && inst_r.alu_op != ALU_CMP && inst_r.alu_op != ALU_TEST1)
                             needs_mem_write <= 1'b1;
                         else
                             needs_mem_write <= 1'b0;
@@ -632,7 +631,7 @@ module v60_control
         alu_size          = SZ_WORD;
         alu_a             = 32'h0;
         alu_b             = 32'h0;
-        alu_carry_in      = 1'b0;
+        alu_flags_in      = 4'h0;
         flags_cond        = 4'h0;
         data_bus_req      = BUS_IDLE;
         data_bus_addr     = 32'h0;
@@ -776,9 +775,9 @@ module v60_control
                                     alu_b        = rf_rd_data_b;
                                     alu_op       = inst_r.alu_op;
                                     alu_size     = inst_r.data_size;
-                                    alu_carry_in = psw[PSW_CY];
+                                    alu_flags_in = psw[3:0];
 
-                                    if (inst_r.am_dst == AM_REGISTER && inst_r.alu_op != ALU_CMP) begin
+                                    if (inst_r.am_dst == AM_REGISTER && inst_r.alu_op != ALU_CMP && inst_r.alu_op != ALU_TEST1) begin
                                         rf_wr_en   = 1'b1;
                                         rf_wr_addr = inst_r.reg_dst;
                                         rf_wr_data = alu_result;
@@ -811,6 +810,7 @@ module v60_control
                                         alu_a        = rf_rd_data_a;
                                         alu_op       = inst_r.alu_op;
                                         alu_size     = inst_r.data_size;
+                                        alu_flags_in = psw[3:0];
 
                                         if (inst_r.am_dst == AM_REGISTER) begin
                                             rf_wr_en   = 1'b1;
@@ -839,6 +839,9 @@ module v60_control
                 // Pointer reads (indirect) and control flow stack ops are always 32-bit
                 if (indirect_active || inst_r.ctrl_flow != CF_NONE)
                     data_bus_size = SZ_WORD;
+                // Shift/rotate source (count) is always byte when reading source from memory
+                else if (inst_r.src_is_byte && inst_r.is_mem_src)
+                    data_bus_size = SZ_BYTE;
                 else
                     data_bus_size = inst_r.data_size;
             end
@@ -937,9 +940,9 @@ module v60_control
 
                                     alu_op       = inst_r.alu_op;
                                     alu_size     = inst_r.data_size;
-                                    alu_carry_in = psw[PSW_CY];
+                                    alu_flags_in = psw[3:0];
 
-                                    if (inst_r.is_mem_src && inst_r.alu_op != ALU_CMP) begin
+                                    if (inst_r.is_mem_src && inst_r.alu_op != ALU_CMP && inst_r.alu_op != ALU_TEST1) begin
                                         rf_wr_en   = 1'b1;
                                         rf_wr_addr = inst_r.reg_dst;
                                         rf_wr_data = alu_result;
@@ -952,9 +955,10 @@ module v60_control
                                 end
 
                                 FMT_III: begin
-                                    alu_a    = temp_data;
-                                    alu_op   = inst_r.alu_op;
-                                    alu_size = inst_r.data_size;
+                                    alu_a        = temp_data;
+                                    alu_op       = inst_r.alu_op;
+                                    alu_size     = inst_r.data_size;
+                                    alu_flags_in = psw[3:0];
 
                                     if (inst_r.writes_flags) begin
                                         psw_cc_wr_en   = 1'b1;

@@ -72,7 +72,7 @@ module v60_cpu
     alu_op_t     alu_op;
     data_size_t  alu_size;
     logic [31:0] alu_a, alu_b, alu_result;
-    logic        alu_carry_in;
+    logic [3:0]  alu_flags_in;
     logic        alu_flag_z, alu_flag_s, alu_flag_ov, alu_flag_cy;
 
     // Flags
@@ -246,7 +246,7 @@ module v60_cpu
         .size     (alu_size),
         .a        (alu_a),
         .b        (alu_b),
-        .carry_in (alu_carry_in),
+        .flags_in (alu_flags_in),
         .result   (alu_result),
         .flag_z   (alu_flag_z),
         .flag_s   (alu_flag_s),
@@ -303,7 +303,7 @@ module v60_cpu
         .alu_size            (alu_size),
         .alu_a               (alu_a),
         .alu_b               (alu_b),
-        .alu_carry_in        (alu_carry_in),
+        .alu_flags_in        (alu_flags_in),
         .alu_result          (alu_result),
         .alu_flag_z          (alu_flag_z),
         .alu_flag_s          (alu_flag_s),

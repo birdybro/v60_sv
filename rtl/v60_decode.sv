@@ -134,6 +134,85 @@ module v60_decode
             is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_NEG; fmt1_size = SZ_HALF;
         end else if (opcode == OP_NEG_W) begin
             is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_NEG; fmt1_size = SZ_WORD;
+        // Phase 7: MUL family
+        end else if (opcode == OP_MUL_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_MUL; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_MUL_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_MUL; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_MUL_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_MUL; fmt1_size = SZ_WORD;
+        // Phase 7: MULU family
+        end else if (opcode == OP_MULU_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_MULU; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_MULU_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_MULU; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_MULU_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_MULU; fmt1_size = SZ_WORD;
+        // DIV family
+        end else if (opcode == OP_DIV_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_DIV; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_DIV_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_DIV; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_DIV_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_DIV; fmt1_size = SZ_WORD;
+        // DIVU family
+        end else if (opcode == OP_DIVU_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_DIVU; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_DIVU_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_DIVU; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_DIVU_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_DIVU; fmt1_size = SZ_WORD;
+        // REM family
+        end else if (opcode == OP_REM_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_REM; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_REM_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_REM; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_REM_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_REM; fmt1_size = SZ_WORD;
+        // REMU family
+        end else if (opcode == OP_REMU_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_REMU; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_REMU_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_REMU; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_REMU_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_REMU; fmt1_size = SZ_WORD;
+        // SHL family
+        end else if (opcode == OP_SHL_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_SHL; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_SHL_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_SHL; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_SHL_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_SHL; fmt1_size = SZ_WORD;
+        // SHA family
+        end else if (opcode == OP_SHA_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_SHA; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_SHA_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_SHA; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_SHA_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_SHA; fmt1_size = SZ_WORD;
+        // ROT family
+        end else if (opcode == OP_ROT_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_ROT; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_ROT_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_ROT; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_ROT_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_ROT; fmt1_size = SZ_WORD;
+        // ROTC family
+        end else if (opcode == OP_ROTC_B) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_ROTC; fmt1_size = SZ_BYTE;
+        end else if (opcode == OP_ROTC_H) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_ROTC; fmt1_size = SZ_HALF;
+        end else if (opcode == OP_ROTC_W) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_ROTC; fmt1_size = SZ_WORD;
+        // Bit operations (word only)
+        end else if (opcode == OP_TEST1) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_TEST1; fmt1_size = SZ_WORD;
+        end else if (opcode == OP_SET1) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_SET1; fmt1_size = SZ_WORD;
+        end else if (opcode == OP_CLR1) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_CLR1; fmt1_size = SZ_WORD;
+        end else if (opcode == OP_NOT1) begin
+            is_fmt1_alu = 1'b1; fmt1_alu_op = ALU_NOT1; fmt1_size = SZ_WORD;
         end
     end
 
@@ -141,11 +220,22 @@ module v60_decode
     assign is_fmt1 = is_fmt1_mov || is_fmt1_alu;
 
     // =========================================================================
-    // Immediate value size in bytes (based on data_size)
+    // Source dimension override for shift/rotate
+    // When d=1 (mod=source/count), shift/rotate source is always byte
+    // =========================================================================
+    logic fmt1_src_is_byte;
+    assign fmt1_src_is_byte = (fmt1_alu_op == ALU_SHL || fmt1_alu_op == ALU_SHA ||
+                               fmt1_alu_op == ALU_ROT || fmt1_alu_op == ALU_ROTC);
+
+    data_size_t fmt1_mod_dim;
+    assign fmt1_mod_dim = (fmt1_src_is_byte && fmt1_d) ? SZ_BYTE : fmt1_size;
+
+    // =========================================================================
+    // Immediate value size in bytes (based on mod dimension)
     // =========================================================================
     logic [2:0] imm_bytes;
     always_comb begin
-        case (fmt1_size)
+        case (fmt1_mod_dim)
             SZ_BYTE: imm_bytes = 3'd1;
             SZ_HALF: imm_bytes = 3'd2;
             SZ_WORD: imm_bytes = 3'd4;
@@ -158,7 +248,7 @@ module v60_decode
     // =========================================================================
     logic [31:0] fmt1_imm_val;
     always_comb begin
-        case (fmt1_size)
+        case (fmt1_mod_dim)
             SZ_BYTE: fmt1_imm_val = {24'h0, ibuf_data[3]};
             SZ_HALF: fmt1_imm_val = {16'h0, ibuf_data[4], ibuf_data[3]};
             SZ_WORD: fmt1_imm_val = {ibuf_data[6], ibuf_data[5], ibuf_data[4], ibuf_data[3]};
@@ -757,6 +847,7 @@ module v60_decode
 
             // MOV does NOT modify flags; ALU ops (ADD, SUB, etc.) do
             decoded.writes_flags = (fmt1_alu_op != ALU_MOV);
+            decoded.src_is_byte  = fmt1_src_is_byte;
 
             decoded.inst_len = 6'd2 + f1_mod_len;
             decode_valid     = (ibuf_valid_count >= (5'd2 + f1_mod_len[4:0]));

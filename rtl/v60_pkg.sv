@@ -122,6 +122,12 @@ package v60_pkg;
         ALU_DIVU  = 5'd18,
         ALU_INC   = 5'd19,
         ALU_DEC   = 5'd20,
+        ALU_REM   = 5'd21,
+        ALU_REMU  = 5'd22,
+        ALU_SET1  = 5'd23,
+        ALU_CLR1  = 5'd24,
+        ALU_NOT1  = 5'd25,
+        ALU_TEST1 = 5'd26,
         ALU_NOP   = 5'd31
     } alu_op_t;
 
@@ -309,6 +315,40 @@ package v60_pkg;
     localparam logic [7:0] OP_NEG_B   = 8'h39;
     localparam logic [7:0] OP_NEG_H   = 8'h3B;
     localparam logic [7:0] OP_NEG_W   = 8'h3D;
+    // Phase 7: Multiply/Divide/Remainder
+    localparam logic [7:0] OP_MULU_B = 8'h91;
+    localparam logic [7:0] OP_MULU_H = 8'h93;
+    localparam logic [7:0] OP_MULU_W = 8'h95;
+    localparam logic [7:0] OP_DIV_B  = 8'hA1;
+    localparam logic [7:0] OP_DIV_H  = 8'hA3;
+    localparam logic [7:0] OP_DIV_W  = 8'hA5;
+    localparam logic [7:0] OP_DIVU_B = 8'hB1;
+    localparam logic [7:0] OP_DIVU_H = 8'hB3;
+    localparam logic [7:0] OP_DIVU_W = 8'hB5;
+    localparam logic [7:0] OP_REM_B  = 8'h50;
+    localparam logic [7:0] OP_REM_H  = 8'h52;
+    localparam logic [7:0] OP_REM_W  = 8'h54;
+    localparam logic [7:0] OP_REMU_B = 8'h51;
+    localparam logic [7:0] OP_REMU_H = 8'h53;
+    localparam logic [7:0] OP_REMU_W = 8'h55;
+    // Phase 7: Shift/Rotate
+    localparam logic [7:0] OP_SHL_B  = 8'hA9;
+    localparam logic [7:0] OP_SHL_H  = 8'hAB;
+    localparam logic [7:0] OP_SHL_W  = 8'hAD;
+    localparam logic [7:0] OP_SHA_B  = 8'hB9;
+    localparam logic [7:0] OP_SHA_H  = 8'hBB;
+    localparam logic [7:0] OP_SHA_W  = 8'hBD;
+    localparam logic [7:0] OP_ROT_B  = 8'h89;
+    localparam logic [7:0] OP_ROT_H  = 8'h8B;
+    localparam logic [7:0] OP_ROT_W  = 8'h8D;
+    localparam logic [7:0] OP_ROTC_B = 8'h99;
+    localparam logic [7:0] OP_ROTC_H = 8'h9B;
+    localparam logic [7:0] OP_ROTC_W = 8'h9D;
+    // Phase 7: Bit operations
+    localparam logic [7:0] OP_TEST1  = 8'h87;
+    localparam logic [7:0] OP_SET1   = 8'h97;
+    localparam logic [7:0] OP_CLR1   = 8'hA7;
+    localparam logic [7:0] OP_NOT1   = 8'hB7;
     // INC/DEC (Format III, opcode LSB = m bit)
     localparam logic [7:0] OP_DEC_B_0 = 8'hD0;
     localparam logic [7:0] OP_DEC_B_1 = 8'hD1;
@@ -375,6 +415,7 @@ package v60_pkg;
         logic           needs_indirect; // Pointer dereference needed (indirect/dbldisp modes)
         logic [31:0]    imm_value2;   // Second displacement (DblDisp/PCDblDisp modes)
         ctrl_flow_t     ctrl_flow;    // Control flow instruction type
+        logic           src_is_byte;  // Source operand always byte (shift/rotate count)
     } decoded_inst_t;
 
 endpackage
