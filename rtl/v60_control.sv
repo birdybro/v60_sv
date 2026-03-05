@@ -1,7 +1,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 // v60_control.sv — Main FSM controller
-// Phase 8: System/utility instructions
+// Phase 11: Floating point (0x5C, 0x5F) with dual-AM FSM
 
 module v60_control
     import v60_pkg::*;
@@ -78,6 +78,20 @@ module v60_control
     // Interrupt interface
     input  logic        int_pending,
     input  logic [7:0]  int_vector,
+    input  logic        is_nmi,
+    output logic        int_ack,
+    input  logic [31:0] current_sp,
+
+    // FPU interface
+    output fp_op_t      fpu_op,
+    output logic [31:0] fpu_a,
+    output logic [31:0] fpu_b,
+    output logic [2:0]  fpu_rounding,
+    input  logic [31:0] fpu_result,
+    input  logic        fpu_flag_z,
+    input  logic        fpu_flag_s,
+    input  logic        fpu_flag_ov,
+    input  logic        fpu_flag_cy,
 
     // Status outputs
     output fsm_state_t  state_out,
@@ -101,6 +115,18 @@ module v60_control
     logic [31:0] multi_bitmap;     // PUSHM/POPM register bitmap
     logic [4:0]  multi_reg_idx;    // Current register being pushed/popped
     logic [31:0] return_addr;      // Saved return address for RET
+
+    // FP dual-AM state
+    logic [1:0]  fp_phase;         // 0=reading AM1, 1=reading AM2
+    logic [31:0] fp_src_val;       // AM1 value (saved across phases)
+    logic [31:0] temp_addr2;       // AM2 effective address
+
+    // Interrupt/exception state
+    logic [31:0] saved_psw;        // Old PSW during interrupt/exception
+    logic [7:0]  saved_vector;     // Vector number for IVT lookup
+    logic [31:0] exc_code;         // Exception code word (TRAP/BRKV)
+    logic        int_active;       // In interrupt/exception push sequence
+    logic [1:0]  int_type;         // 0=none, 1=hw, 2=trap, 3=brkv
 
     assign state_out = state;
     assign halted    = (state == ST_HALT);
@@ -147,6 +173,37 @@ module v60_control
     end
 
     // =========================================================================
+    // Format II FP operation classification (from latched inst_r)
+    // =========================================================================
+    logic fmt2_is_cmpf_r;
+    logic fmt2_is_mov_like_r;
+    logic fmt2_is_rmw_r;
+    assign fmt2_is_cmpf_r     = (inst_r.fp_op == FP_CMPF);
+    assign fmt2_is_mov_like_r = (inst_r.fp_op == FP_MOVF || inst_r.fp_op == FP_CVTWS || inst_r.fp_op == FP_CVTSW);
+    assign fmt2_is_rmw_r      = (inst_r.fp_op == FP_ADDF || inst_r.fp_op == FP_SUBF ||
+                                  inst_r.fp_op == FP_MULF || inst_r.fp_op == FP_DIVF ||
+                                  inst_r.fp_op == FP_NEGF || inst_r.fp_op == FP_ABSF ||
+                                  inst_r.fp_op == FP_SCLF);
+
+    // =========================================================================
+    // Format II AM2 effective address (uses rf_rd_data_b for base register)
+    // =========================================================================
+    logic [31:0] eff_addr_comb2;
+    always_comb begin
+        case (inst_r.am_dst)
+            AM_REG_INDIRECT:     eff_addr_comb2 = rf_rd_data_b;
+            AM_REG_INDIRECT_INC: eff_addr_comb2 = rf_rd_data_b;
+            AM_REG_INDIRECT_DEC: eff_addr_comb2 = rf_rd_data_b - 32'd4; // always word
+            AM_DISP16_REG:       eff_addr_comb2 = rf_rd_data_b + inst_r.imm_value_dst;
+            AM_DISP32_REG:       eff_addr_comb2 = rf_rd_data_b + inst_r.imm_value_dst;
+            AM_PC_DISP16:        eff_addr_comb2 = pc + inst_r.imm_value_dst;
+            AM_PC_DISP32:        eff_addr_comb2 = pc + inst_r.imm_value_dst;
+            AM_DIRECT_ADDR:      eff_addr_comb2 = inst_r.imm_value_dst;
+            default:             eff_addr_comb2 = 32'h0;
+        endcase
+    end
+
+    // =========================================================================
     // PUSHM priority encoder: find highest set bit (for descending push)
     // =========================================================================
     logic [5:0] bitmap_highest;  // 32 = no bits set
@@ -184,6 +241,39 @@ module v60_control
     end
 
     // =========================================================================
+    // Exception PSW computation (combinational)
+    // =========================================================================
+    logic [31:0] exc_new_psw;
+    always_comb begin
+        exc_new_psw = psw;
+        exc_new_psw[25:24] = 2'b00;       // EL = 0
+        exc_new_psw[PSW_ID] = 1'b0;       // IE = 0 (disable interrupts)
+        exc_new_psw[PSW_NP] = 1'b0;       // bit 16
+        exc_new_psw[PSW_TE] = 1'b0;       // bit 17
+        exc_new_psw[PSW_TP] = 1'b0;       // bit 27
+        exc_new_psw[PSW_EM] = 1'b0;       // bit 29
+        exc_new_psw[PSW_ASA] = 1'b1;      // bit 31
+    end
+
+    // Exception PSW for hardware interrupt (also sets IS=1)
+    logic [31:0] exc_hw_psw;
+    always_comb begin
+        exc_hw_psw = exc_new_psw;
+        exc_hw_psw[PSW_IS] = 1'b1;        // Switch to interrupt stack
+    end
+
+    // Push sequence done detection
+    logic int_push_done;
+    always_comb begin
+        case (int_type)
+            2'd1:    int_push_done = (multi_step == 3'd1); // HW: 2 pushes
+            2'd2:    int_push_done = (multi_step == 3'd2); // TRAP: 3 pushes
+            2'd3:    int_push_done = (multi_step == 3'd3); // BRKV: 4 pushes
+            default: int_push_done = 1'b1;
+        endcase
+    end
+
+    // =========================================================================
     // FSM State Register
     // =========================================================================
     always_ff @(posedge clk or negedge rst_n) begin
@@ -199,6 +289,14 @@ module v60_control
             multi_bitmap    <= 32'h0;
             multi_reg_idx   <= 5'd0;
             return_addr     <= 32'h0;
+            saved_psw       <= 32'h0;
+            saved_vector    <= 8'h0;
+            exc_code        <= 32'h0;
+            int_active      <= 1'b0;
+            int_type        <= 2'd0;
+            fp_phase        <= 2'd0;
+            fp_src_val      <= 32'h0;
+            temp_addr2      <= 32'h0;
         end else begin
             state <= next_state;
 
@@ -378,8 +476,72 @@ module v60_control
                         multi_step <= 3'd0; // 0=find next bit, 1=read done
                     end
 
+                    CF_RSR: begin
+                        temp_addr <= rf_rd_data_b; // SP (port_b=31)
+                    end
+
+                    CF_TRAP: begin
+                        if (inst_r.is_mem_dst) begin
+                            // Memory operand: read first
+                            temp_addr <= eff_addr_comb;
+                            indirect_active <= inst_r.needs_indirect;
+                        end else if (flags_cond_met) begin
+                            // Condition met: fire trap
+                            saved_psw <= psw;
+                            saved_vector <= 8'd48 + {4'h0, cf_operand_val[3:0]};
+                            exc_code <= {4'h3, cf_operand_val[3:0], 8'h00, 16'h0004};
+                            return_addr <= pc + {26'h0, inst_r.inst_len};
+                            int_active <= 1'b1;
+                            int_type <= 2'd2;
+                            multi_step <= 3'd0;
+                        end
+                    end
+
+                    CF_BRKV: begin
+                        saved_psw <= psw;
+                        saved_vector <= 8'd21;
+                        exc_code <= 32'h15010004;
+                        return_addr <= pc + 32'd1;
+                        temp_src <= pc; // Save current PC for BRKV push
+                        int_active <= 1'b1;
+                        int_type <= 2'd3;
+                        multi_step <= 3'd0;
+                    end
+
+                    CF_RETIU: begin
+                        temp_addr <= rf_rd_data_b; // SP (port_b=31)
+                        temp_src  <= cf_operand_val; // frame size
+                        multi_step <= 3'd0;
+                    end
+
                     default: ;
                 endcase
+
+                // --- Format II FP dual-AM handling ---
+                if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                    fp_phase <= 2'd0;
+                    temp_addr2 <= eff_addr_comb2;
+                    needs_mem_write <= 1'b0;
+                    indirect_active <= 1'b0;
+
+                    // Grab AM1 value if it's register or immediate
+                    if (!inst_r.is_mem_src) begin
+                        case (inst_r.am_src)
+                            AM_REGISTER:  fp_src_val <= rf_rd_data_a;
+                            AM_IMMEDIATE: fp_src_val <= inst_r.imm_value;
+                            AM_IMM_QUICK: fp_src_val <= inst_r.imm_value;
+                            default:      fp_src_val <= rf_rd_data_a;
+                        endcase
+                    end
+
+                    // Compute temp_addr for AM1 read if needed
+                    if (inst_r.is_mem_src) begin
+                        temp_addr <= eff_addr_comb;
+                    end
+
+                    // Auto-decrement AM2 base register
+                    // (handled in writeback via auto_dec2)
+                end
             end
 
             // ================================================================
@@ -387,6 +549,72 @@ module v60_control
             // ================================================================
             if (state == ST_MEM_READ_WAIT && data_bus_valid) begin
                 temp_data <= data_bus_rdata;
+                // Vector fetch complete — clear int_active
+                if (int_active) begin
+                    int_active <= 1'b0;
+                end
+            end
+
+            // ================================================================
+            // ST_INT_CHECK sequential (hardware interrupt entry)
+            // ================================================================
+            if (state == ST_INT_CHECK) begin
+                saved_psw    <= psw;
+                saved_vector <= int_vector;
+                return_addr  <= pc;
+                int_active   <= 1'b1;
+                int_type     <= 2'd1; // HW interrupt
+                multi_step   <= 3'd0;
+            end
+
+            // ================================================================
+            // ST_INT_ACK sequential (set up first push)
+            // ================================================================
+            if (state == ST_INT_ACK) begin
+                temp_addr <= current_sp - 32'd4; // First push addr = new SP - 4
+                case (int_type)
+                    2'd1: temp_data <= saved_psw;    // HW: push saved_psw first
+                    2'd2: temp_data <= exc_code;     // TRAP: push exc_code first
+                    2'd3: temp_data <= temp_src;     // BRKV: push PC first
+                    default: temp_data <= 32'h0;
+                endcase
+            end
+
+            // ================================================================
+            // ST_MEM_WRITE_WAIT sequential (int_active push chain)
+            // ================================================================
+            if (state == ST_MEM_WRITE_WAIT && data_bus_valid && int_active) begin
+                if (int_push_done) begin
+                    // All pushes complete — set up vector read
+                    temp_src <= temp_addr; // Save final SP
+                    // Vector address computed in combinational via preg_addr/preg_rd_data
+                    temp_addr <= (preg_rd_data & 32'hFFFFF000) + {22'h0, saved_vector, 2'b00};
+                end else begin
+                    // Next push
+                    multi_step <= multi_step + 3'd1;
+                    temp_addr <= temp_addr - 32'd4;
+                    case (int_type)
+                        2'd1: begin // HW: step 0→1
+                            temp_data <= return_addr; // Push PC
+                        end
+                        2'd2: begin // TRAP
+                            case (multi_step)
+                                3'd0: temp_data <= saved_psw;    // step 0→1
+                                3'd1: temp_data <= return_addr;  // step 1→2
+                                default: ;
+                            endcase
+                        end
+                        2'd3: begin // BRKV
+                            case (multi_step)
+                                3'd0: temp_data <= exc_code;     // step 0→1
+                                3'd1: temp_data <= saved_psw;    // step 1→2
+                                3'd2: temp_data <= return_addr;  // step 2→3
+                                default: ;
+                            endcase
+                        end
+                        default: ;
+                    endcase
+                end
             end
 
             // ================================================================
@@ -461,13 +689,72 @@ module v60_control
                         end
                         default: ;
                     endcase
+                end else if (inst_r.ctrl_flow == CF_RSR) begin
+                    // RSR: temp_data has return address
+                    return_addr <= temp_data;
+                end else if (inst_r.ctrl_flow == CF_TRAP) begin
+                    if (indirect_active) begin
+                        // Indirect resolution
+                        temp_addr <= temp_data + inst_r.imm_value2;
+                        indirect_active <= 1'b0;
+                    end else begin
+                        // temp_data has operand byte — evaluate condition
+                        if (flags_cond_met) begin
+                            saved_psw <= psw;
+                            saved_vector <= 8'd48 + {4'h0, temp_data[3:0]};
+                            exc_code <= {4'h3, temp_data[3:0], 8'h00, 16'h0004};
+                            return_addr <= pc + {26'h0, inst_r.inst_len};
+                            int_active <= 1'b1;
+                            int_type <= 2'd2;
+                            multi_step <= 3'd0;
+                        end
+                    end
+                end else if (inst_r.ctrl_flow == CF_RETIU) begin
+                    case (multi_step)
+                        3'd0: begin
+                            // Popped PC
+                            return_addr <= temp_data;
+                            temp_addr <= temp_addr + 32'd4;
+                            multi_step <= 3'd1;
+                        end
+                        3'd1: begin
+                            // Popped PSW
+                            saved_psw <= temp_data;
+                        end
+                        default: ;
+                    endcase
+                end
+
+                // --- Format II FP EXECUTE2 sequential ---
+                if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                    if (fp_phase == 2'd0) begin
+                        // AM1 data ready in temp_data
+                        fp_src_val <= temp_data;
+                        fp_phase <= 2'd1;
+
+                        // If R-M-W or CMPF with mem AM2: set up read of AM2
+                        if (inst_r.is_mem_dst) begin
+                            temp_addr <= temp_addr2;
+                        end
+
+                        // For MOV-like to mem: compute result immediately
+                        // (fpu_result available combinationally in comb block)
+                    end else if (fp_phase == 2'd1) begin
+                        // AM2 data ready in temp_data (for R-M-W / CMPF)
+                        // FPU result computed combinationally
+                        // For R-M-W mem write: set up write
+                        if (inst_r.is_mem_dst) begin
+                            temp_data <= fpu_result;
+                            temp_addr <= temp_addr2;
+                        end
+                    end
                 end
             end
 
             // ================================================================
-            // ST_MEM_WRITE_WAIT sequential updates
+            // ST_MEM_WRITE_WAIT sequential updates (non-interrupt)
             // ================================================================
-            if (state == ST_MEM_WRITE_WAIT && data_bus_valid) begin
+            if (state == ST_MEM_WRITE_WAIT && data_bus_valid && !int_active) begin
                 needs_mem_write <= 1'b0;
 
                 if (inst_r.ctrl_flow == CF_PUSHM) begin
@@ -555,9 +842,41 @@ module v60_control
 
                     CF_POPM: next_state = ST_EXECUTE2; // start bitmap scan
 
+                    CF_RSR: next_state = ST_MEM_READ; // pop return addr
+
+                    CF_TRAP: begin
+                        if (inst_r.is_mem_dst)
+                            next_state = ST_MEM_READ; // read operand
+                        else if (flags_cond_met)
+                            next_state = ST_INT_ACK;  // fire trap
+                        else
+                            next_state = ST_WRITEBACK; // condition not met
+                    end
+
+                    CF_BRKV: next_state = ST_INT_ACK; // always fire
+
+                    CF_RETIU: next_state = ST_MEM_READ; // pop PC
+
+                    CF_DBCC: next_state = ST_WRITEBACK; // no memory access
+
                     default: begin
+                        // Format II FP: dual-AM next state
+                        if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                            if (inst_r.is_mem_src)
+                                // Need to read AM1 from memory first
+                                next_state = ST_MEM_READ;
+                            else if (inst_r.is_mem_dst && (fmt2_is_rmw_r || fmt2_is_cmpf_r))
+                                // AM1 is reg/imm, need to read AM2 from memory
+                                next_state = ST_MEM_READ;
+                            else if (inst_r.is_mem_dst && fmt2_is_mov_like_r)
+                                // MOV-like to memory: write FPU result directly
+                                next_state = ST_MEM_WRITE;
+                            else
+                                // Both register/immediate: straight to writeback
+                                next_state = ST_WRITEBACK;
+                        end
                         // MOVEA with non-indirect memory source: address is already computed
-                        if (inst_r.sys_op == SYS_MOVEA && inst_r.is_mem_src && !inst_r.needs_indirect)
+                        else if (inst_r.sys_op == SYS_MOVEA && inst_r.is_mem_src && !inst_r.needs_indirect)
                             next_state = ST_WRITEBACK;
                         // TASI Format III: register path goes straight to writeback
                         else if (inst_r.sys_op == SYS_TASI && !inst_r.is_mem_dst)
@@ -590,8 +909,12 @@ module v60_control
             end
 
             ST_MEM_READ_WAIT: begin
-                if (data_bus_valid)
-                    next_state = ST_EXECUTE2;
+                if (data_bus_valid) begin
+                    if (int_active)
+                        next_state = ST_FETCH; // vector fetched
+                    else
+                        next_state = ST_EXECUTE2;
+                end
             end
 
             ST_EXECUTE2: begin
@@ -645,9 +968,46 @@ module v60_control
                         endcase
                     end
 
+                    CF_RSR: next_state = ST_WRITEBACK;
+
+                    CF_TRAP: begin
+                        if (indirect_active)
+                            next_state = ST_MEM_READ; // continue indirect
+                        else if (flags_cond_met)
+                            next_state = ST_INT_ACK;  // fire trap
+                        else
+                            next_state = ST_WRITEBACK; // condition not met
+                    end
+
+                    CF_RETIU: begin
+                        case (multi_step)
+                            3'd0: next_state = ST_MEM_READ;  // pop PSW
+                            3'd1: next_state = ST_WRITEBACK;  // done
+                            default: next_state = ST_WRITEBACK;
+                        endcase
+                    end
+
                     default: begin
+                        // Format II FP: dual-AM next state in EXECUTE2
+                        if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                            if (fp_phase == 2'd0) begin
+                                // AM1 data just arrived
+                                if (inst_r.is_mem_dst && (fmt2_is_rmw_r || fmt2_is_cmpf_r))
+                                    next_state = ST_MEM_READ; // read AM2
+                                else if (inst_r.is_mem_dst && fmt2_is_mov_like_r)
+                                    next_state = ST_MEM_WRITE; // write result to AM2
+                                else
+                                    next_state = ST_WRITEBACK; // AM2 is register
+                            end else begin
+                                // fp_phase==1: AM2 data arrived
+                                if (inst_r.is_mem_dst && !fmt2_is_cmpf_r)
+                                    next_state = ST_MEM_WRITE; // write R-M-W result
+                                else
+                                    next_state = ST_WRITEBACK; // CMPF or register dest
+                            end
+                        end
                         // Standard Phase 5 logic
-                        if (indirect_active) begin
+                        else if (indirect_active) begin
                             if (inst_r.is_mem_dst && inst_r.alu_op == ALU_MOV)
                                 next_state = ST_MEM_WRITE;
                             else
@@ -667,10 +1027,17 @@ module v60_control
 
             ST_MEM_WRITE_WAIT: begin
                 if (data_bus_valid) begin
-                    case (inst_r.ctrl_flow)
-                        CF_PUSHM: next_state = ST_EXECUTE2; // scan for next bit
-                        default:  next_state = ST_WRITEBACK;
-                    endcase
+                    if (int_active) begin
+                        if (int_push_done)
+                            next_state = ST_MEM_READ;  // read vector
+                        else
+                            next_state = ST_MEM_WRITE;  // next push
+                    end else begin
+                        case (inst_r.ctrl_flow)
+                            CF_PUSHM: next_state = ST_EXECUTE2; // scan for next bit
+                            default:  next_state = ST_WRITEBACK;
+                        endcase
+                    end
                 end
             end
 
@@ -687,7 +1054,11 @@ module v60_control
             end
 
             ST_INT_CHECK: begin
-                next_state = ST_FETCH;
+                next_state = ST_INT_ACK;
+            end
+
+            ST_INT_ACK: begin
+                next_state = ST_MEM_WRITE; // start push sequence
             end
 
             default: next_state = ST_RESET;
@@ -728,6 +1099,11 @@ module v60_control
         preg_wr_en        = 1'b0;
         preg_addr         = 5'd0;
         preg_wr_data      = 32'h0;
+        int_ack           = 1'b0;
+        fpu_op            = FP_NONE;
+        fpu_a             = 32'h0;
+        fpu_b             = 32'h0;
+        fpu_rounding      = 3'd0;
 
         case (state)
             ST_RESET: begin
@@ -815,6 +1191,41 @@ module v60_control
                     CF_POPM: begin
                         rf_rd_addr_a = inst_r.reg_dst; // operand register (bitmap)
                         rf_rd_addr_b = 5'd31; // SP
+                    end
+
+                    CF_RSR: begin
+                        rf_rd_addr_b = 5'd31; // SP
+                    end
+
+                    CF_TRAP: begin
+                        rf_rd_addr_a = inst_r.reg_dst; // operand register or addr register
+                        if (!inst_r.is_mem_dst) begin
+                            // Evaluate condition from operand byte
+                            case (inst_r.am_dst)
+                                AM_REGISTER:  flags_cond = rf_rd_data_a[7:4];
+                                AM_IMMEDIATE: flags_cond = inst_r.imm_value[7:4];
+                                AM_IMM_QUICK: flags_cond = inst_r.imm_value[7:4];
+                                default:      flags_cond = rf_rd_data_a[7:4];
+                            endcase
+                            if (flags_cond_met) begin
+                                psw_wr_en   = 1'b1;
+                                psw_wr_data = exc_new_psw;
+                            end
+                        end
+                    end
+
+                    CF_BRKV: begin
+                        psw_wr_en   = 1'b1;
+                        psw_wr_data = exc_new_psw;
+                    end
+
+                    CF_RETIU: begin
+                        rf_rd_addr_a = inst_r.reg_dst; // operand register
+                        rf_rd_addr_b = 5'd31; // SP
+                    end
+
+                    CF_DBCC: begin
+                        rf_rd_addr_a = inst_r.reg_dst; // counter register
                     end
 
                     // =========================================================
@@ -1078,10 +1489,88 @@ module v60_control
                                 end
                             end
 
+                            FMT_II: begin
+                                // FP dual-AM: set up register reads for both AMs
+                                rf_rd_addr_a = inst_r.reg_src; // AM1 base register
+                                rf_rd_addr_b = inst_r.reg_dst; // AM2 base register
+
+                                // AM2 auto-decrement: write back decremented register now
+                                if (inst_r.auto_dec2) begin
+                                    rf_wr_en   = 1'b1;
+                                    rf_wr_addr = inst_r.reg_dst;
+                                    rf_wr_data = eff_addr_comb2;
+                                end
+                                // AM1 auto-decrement
+                                if (inst_r.auto_dec) begin
+                                    rf_wr_en   = 1'b1;
+                                    rf_wr_addr = inst_r.reg_src;
+                                    rf_wr_data = eff_addr_comb;
+                                end
+
+                                // For !is_mem_src && !is_mem_dst: compute in comb and write
+                                if (!inst_r.is_mem_src && !inst_r.is_mem_dst) begin
+                                    // Both operands are register/immediate
+                                    fpu_op = inst_r.fp_op;
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  fpu_a = rf_rd_data_a;
+                                        AM_IMMEDIATE: fpu_a = inst_r.imm_value;
+                                        AM_IMM_QUICK: fpu_a = inst_r.imm_value;
+                                        default:      fpu_a = rf_rd_data_a;
+                                    endcase
+                                    fpu_b = rf_rd_data_b; // AM2 register value (for R-M-W/CMPF)
+
+                                    // Write result to AM2 register (except CMPF)
+                                    if (!fmt2_is_cmpf_r) begin
+                                        rf_wr_en   = 1'b1;
+                                        rf_wr_addr = inst_r.reg_dst;
+                                        rf_wr_data = fpu_result;
+                                    end
+
+                                    // Update flags
+                                    if (inst_r.writes_flags) begin
+                                        psw_cc_wr_en   = 1'b1;
+                                        psw_cc_wr_data = {fpu_flag_cy, fpu_flag_ov, fpu_flag_s, fpu_flag_z};
+                                    end
+                                end
+
+                                // For !is_mem_src && is_mem_dst && mov_like: compute FPU for mem write
+                                if (!inst_r.is_mem_src && inst_r.is_mem_dst && fmt2_is_mov_like_r) begin
+                                    fpu_op = inst_r.fp_op;
+                                    case (inst_r.am_src)
+                                        AM_REGISTER:  fpu_a = rf_rd_data_a;
+                                        AM_IMMEDIATE: fpu_a = inst_r.imm_value;
+                                        AM_IMM_QUICK: fpu_a = inst_r.imm_value;
+                                        default:      fpu_a = rf_rd_data_a;
+                                    endcase
+                                    fpu_b = 32'h0;
+                                end
+
+                                // For !is_mem_src && is_mem_dst && (rmw/cmpf):
+                                // Need to read AM2 mem first — set temp_addr in sequential
+                            end
+
                             default: ;
                         endcase
                     end
                 endcase
+            end
+
+            // =================================================================
+            // ST_INT_CHECK — Hardware interrupt entry
+            // =================================================================
+            ST_INT_CHECK: begin
+                // Write exception PSW (IS=1 for hardware)
+                psw_wr_en   = 1'b1;
+                psw_wr_data = exc_hw_psw;
+                int_ack     = 1'b1;
+            end
+
+            // =================================================================
+            // ST_INT_ACK — Read new SP, set up first push
+            // =================================================================
+            ST_INT_ACK: begin
+                // current_sp is from regfile, already reflects new PSW
+                // (sequential block will set temp_addr = current_sp - 4)
             end
 
             // =================================================================
@@ -1090,9 +1579,16 @@ module v60_control
             ST_MEM_READ: begin
                 data_bus_req  = BUS_READ;
                 data_bus_addr = temp_addr;
-                // Pointer reads (indirect) and control flow stack ops are always 32-bit
-                if (indirect_active || inst_r.ctrl_flow != CF_NONE)
+                // Pointer reads, control flow, and interrupt vector reads are always 32-bit
+                if (indirect_active || inst_r.ctrl_flow != CF_NONE || int_active)
                     data_bus_size = SZ_WORD;
+                // FP: SCLF AM1 is half, everything else word
+                else if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                    if (inst_r.fp_op == FP_SCLF && fp_phase == 2'd0)
+                        data_bus_size = SZ_HALF;
+                    else
+                        data_bus_size = SZ_WORD;
+                end
                 // Shift/rotate source (count) is always byte when reading source from memory
                 else if (inst_r.src_is_byte && inst_r.is_mem_src)
                     data_bus_size = SZ_BYTE;
@@ -1102,6 +1598,16 @@ module v60_control
 
             ST_MEM_READ_WAIT: begin
                 // Wait for data_bus_valid; temp_data latched in always_ff
+                if (data_bus_valid && int_active) begin
+                    // Vector fetched — jump to vector, write final SP
+                    pc_wr_en         = 1'b1;
+                    pc_wr_data       = data_bus_rdata;
+                    fetch_flush      = 1'b1;
+                    fetch_flush_addr = data_bus_rdata;
+                    rf_wr_en         = 1'b1;
+                    rf_wr_addr       = 5'd31; // SP
+                    rf_wr_data       = temp_src; // saved final SP
+                end
             end
 
             // =================================================================
@@ -1168,6 +1674,17 @@ module v60_control
                                 rf_wr_en   = 1'b1;
                                 rf_wr_addr = multi_reg_idx;
                                 rf_wr_data = temp_data;
+                            end
+                        end
+                    end
+
+                    CF_TRAP: begin
+                        // Memory operand: evaluate condition from temp_data
+                        if (!indirect_active) begin
+                            flags_cond = temp_data[7:4];
+                            if (flags_cond_met) begin
+                                psw_wr_en   = 1'b1;
+                                psw_wr_data = exc_new_psw;
                             end
                         end
                     end
@@ -1318,6 +1835,73 @@ module v60_control
                                     end
                                 end
 
+                                FMT_II: begin
+                                    // FP dual-AM EXECUTE2 datapath
+                                    fpu_op = inst_r.fp_op;
+                                    fpu_a  = fp_src_val;
+                                    fpu_b  = temp_data; // AM2 value (for R-M-W/CMPF)
+
+                                    if (fp_phase == 2'd0) begin
+                                        // AM1 data just arrived in temp_data
+                                        fpu_a = temp_data;
+                                        // For MOV-like to register: compute and write
+                                        if (!inst_r.is_mem_dst && fmt2_is_mov_like_r) begin
+                                            rf_rd_addr_b = inst_r.reg_dst;
+                                            fpu_b = rf_rd_data_b;
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                            rf_wr_data = fpu_result;
+                                            if (inst_r.writes_flags) begin
+                                                psw_cc_wr_en   = 1'b1;
+                                                psw_cc_wr_data = {fpu_flag_cy, fpu_flag_ov, fpu_flag_s, fpu_flag_z};
+                                            end
+                                        end
+                                        // For R-M-W/CMPF to register: need AM2 value
+                                        if (!inst_r.is_mem_dst && (fmt2_is_rmw_r || fmt2_is_cmpf_r)) begin
+                                            rf_rd_addr_b = inst_r.reg_dst;
+                                            fpu_b = rf_rd_data_b;
+                                            // Write result
+                                            if (!fmt2_is_cmpf_r) begin
+                                                rf_wr_en   = 1'b1;
+                                                rf_wr_addr = inst_r.reg_dst;
+                                                rf_wr_data = fpu_result;
+                                            end
+                                            if (inst_r.writes_flags) begin
+                                                psw_cc_wr_en   = 1'b1;
+                                                psw_cc_wr_data = {fpu_flag_cy, fpu_flag_ov, fpu_flag_s, fpu_flag_z};
+                                            end
+                                        end
+                                    end else begin
+                                        // fp_phase==1: AM2 data in temp_data
+                                        fpu_a = fp_src_val;
+                                        fpu_b = temp_data;
+                                        // CMPF: flags only
+                                        if (fmt2_is_cmpf_r) begin
+                                            if (inst_r.writes_flags) begin
+                                                psw_cc_wr_en   = 1'b1;
+                                                psw_cc_wr_data = {fpu_flag_cy, fpu_flag_ov, fpu_flag_s, fpu_flag_z};
+                                            end
+                                        end
+                                        // R-M-W to register: write result
+                                        if (!inst_r.is_mem_dst && !fmt2_is_cmpf_r) begin
+                                            rf_wr_en   = 1'b1;
+                                            rf_wr_addr = inst_r.reg_dst;
+                                            rf_wr_data = fpu_result;
+                                            if (inst_r.writes_flags) begin
+                                                psw_cc_wr_en   = 1'b1;
+                                                psw_cc_wr_data = {fpu_flag_cy, fpu_flag_ov, fpu_flag_s, fpu_flag_z};
+                                            end
+                                        end
+                                        // R-M-W to memory: flags set here, data written in MEM_WRITE
+                                        if (inst_r.is_mem_dst && !fmt2_is_cmpf_r) begin
+                                            if (inst_r.writes_flags) begin
+                                                psw_cc_wr_en   = 1'b1;
+                                                psw_cc_wr_data = {fpu_flag_cy, fpu_flag_ov, fpu_flag_s, fpu_flag_z};
+                                            end
+                                        end
+                                    end
+                                end
+
                                 default: ;
                             endcase
                         end
@@ -1347,9 +1931,28 @@ module v60_control
                     end
 
                     CF_NONE: begin
-                        // Cross-size MOV: write uses dst_size; others use data_size
-                        data_bus_size  = (inst_r.sys_op != SYS_NONE) ? inst_r.dst_size : inst_r.data_size;
-                        data_bus_wdata = temp_data;
+                        if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                            // FP writes are always word-sized
+                            data_bus_size = SZ_WORD;
+                            // For MOV-like: compute FPU result here
+                            if (fmt2_is_mov_like_r && fp_phase == 2'd0) begin
+                                fpu_op = inst_r.fp_op;
+                                fpu_a  = fp_src_val;
+                                fpu_b  = 32'h0;
+                                data_bus_wdata = fpu_result;
+                                // Set flags
+                                if (inst_r.writes_flags) begin
+                                    psw_cc_wr_en   = 1'b1;
+                                    psw_cc_wr_data = {fpu_flag_cy, fpu_flag_ov, fpu_flag_s, fpu_flag_z};
+                                end
+                            end else begin
+                                data_bus_wdata = temp_data;
+                            end
+                        end else begin
+                            // Cross-size MOV: write uses dst_size; others use data_size
+                            data_bus_size  = (inst_r.sys_op != SYS_NONE) ? inst_r.dst_size : inst_r.data_size;
+                            data_bus_wdata = temp_data;
+                        end
                     end
 
                     default: begin
@@ -1361,7 +1964,11 @@ module v60_control
 
             ST_MEM_WRITE_WAIT: begin
                 // Wait for data_bus_valid
-                if (data_bus_valid && inst_r.ctrl_flow == CF_PUSHM) begin
+                if (data_bus_valid && int_active && int_push_done) begin
+                    // All pushes done — read SBR for vector address computation
+                    preg_addr = PREG_SBR[4:0];
+                end
+                if (data_bus_valid && !int_active && inst_r.ctrl_flow == CF_PUSHM) begin
                     // Update temp_addr for next push
                 end
             end
@@ -1484,6 +2091,75 @@ module v60_control
                         pc_wr_data = pc + {26'h0, inst_r.inst_len};
                     end
 
+                    CF_RSR: begin
+                        // SP += 4, PC = return_addr
+                        rf_wr_en   = 1'b1;
+                        rf_wr_addr = 5'd31; // SP
+                        rf_wr_data = temp_addr + 32'd4;
+                        pc_wr_en         = 1'b1;
+                        pc_wr_data       = return_addr;
+                        fetch_flush      = 1'b1;
+                        fetch_flush_addr = return_addr;
+                    end
+
+                    CF_TRAP: begin
+                        // Condition not met — normal advance
+                        fetch_consume_count = inst_r.inst_len;
+                        fetch_consume_valid = 1'b1;
+                        pc_wr_en   = 1'b1;
+                        pc_wr_data = pc + {26'h0, inst_r.inst_len};
+                    end
+
+                    CF_RETIU: begin
+                        // Restore PC, PSW, and adjust SP
+                        pc_wr_en         = 1'b1;
+                        pc_wr_data       = return_addr;
+                        psw_wr_en        = 1'b1;
+                        psw_wr_data      = saved_psw;
+                        rf_wr_en         = 1'b1;
+                        rf_wr_addr       = 5'd31; // SP
+                        rf_wr_data       = temp_addr + 32'd4 + temp_src;
+                        fetch_flush      = 1'b1;
+                        fetch_flush_addr = return_addr;
+                    end
+
+                    CF_DBCC: begin
+                        rf_rd_addr_a = inst_r.reg_dst; // counter register
+                        if (inst_r.cond == CC_NOP) begin
+                            // TB: branch if register == 0, no decrement
+                            if (rf_rd_data_a == 32'd0) begin
+                                pc_wr_en   = 1'b1;
+                                pc_wr_data = pc + inst_r.imm_value;
+                                fetch_flush      = 1'b1;
+                                fetch_flush_addr = pc + inst_r.imm_value;
+                            end else begin
+                                fetch_consume_count = inst_r.inst_len;
+                                fetch_consume_valid = 1'b1;
+                                pc_wr_en   = 1'b1;
+                                pc_wr_data = pc + {26'h0, inst_r.inst_len};
+                            end
+                        end else begin
+                            // DBCC: always decrement counter
+                            rf_wr_en   = 1'b1;
+                            rf_wr_addr = inst_r.reg_dst;
+                            rf_wr_data = rf_rd_data_a - 32'd1;
+                            rf_wr_size = SZ_WORD;
+                            // Branch if decremented != 0 AND condition met
+                            flags_cond = inst_r.cond;
+                            if ((rf_rd_data_a - 32'd1) != 32'd0 && flags_cond_met) begin
+                                pc_wr_en   = 1'b1;
+                                pc_wr_data = pc + inst_r.imm_value;
+                                fetch_flush      = 1'b1;
+                                fetch_flush_addr = pc + inst_r.imm_value;
+                            end else begin
+                                fetch_consume_count = inst_r.inst_len;
+                                fetch_consume_valid = 1'b1;
+                                pc_wr_en   = 1'b1;
+                                pc_wr_data = pc + {26'h0, inst_r.inst_len};
+                            end
+                        end
+                    end
+
                     default: begin
                         // Standard writeback
                         if (!(inst_r.is_branch && flags_cond_met)) begin
@@ -1493,7 +2169,22 @@ module v60_control
                             pc_wr_data = pc + {26'h0, inst_r.inst_len};
                         end
 
-                        if (inst_r.auto_inc) begin
+                        if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                            // FP auto-inc: AM1 uses temp_addr, AM2 uses temp_addr2
+                            if (inst_r.auto_inc) begin
+                                rf_wr_en   = 1'b1;
+                                rf_wr_addr = inst_r.reg_src;
+                                rf_wr_data = temp_addr + 32'd4; // always word
+                            end
+                            // AM2 auto_inc2: different register port needed
+                            // Note: both auto_inc and auto_inc2 in same instruction unlikely
+                            // but handle auto_inc2 via second write if no auto_inc
+                            if (inst_r.auto_inc2 && !inst_r.auto_inc) begin
+                                rf_wr_en   = 1'b1;
+                                rf_wr_addr = inst_r.reg_dst;
+                                rf_wr_data = temp_addr2 + 32'd4; // always word
+                            end
+                        end else if (inst_r.auto_inc) begin
                             rf_wr_en   = 1'b1;
                             rf_wr_addr = inst_r.is_mem_src ? inst_r.reg_src : inst_r.reg_dst;
                             rf_wr_data = temp_addr + {29'h0, size_bytes};

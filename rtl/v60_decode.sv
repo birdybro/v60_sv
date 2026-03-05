@@ -1,6 +1,5 @@
 // v60_decode.sv — Instruction decoder
-// Phase 8: Adds system/utility: cross-size MOV, MOVEA, RVBIT, RVBYT,
-//          SETF, UPDPSW, LDPR, STPR, TASI
+// Phase 11: Adds Format II FP (0x5C, 0x5F) with dual-AM decode
 // Combinational decode from fetch buffer window
 
 /* verilator lint_off UNUSEDSIGNAL */
@@ -274,6 +273,50 @@ module v60_decode
     assign is_fmt1 = is_fmt1_mov || is_fmt1_alu || is_fmt1_sys;
 
     // =========================================================================
+    // Format II FP detection and subop dispatch
+    // =========================================================================
+    logic       is_fmt2_fp;
+    assign is_fmt2_fp = (opcode == OP_FP_5C || opcode == OP_FP_5F);
+
+    logic [4:0] fmt2_subop;
+    assign fmt2_subop = ibuf_data[1][4:0];
+
+    fp_op_t     fmt2_fp_op;
+    logic       fmt2_is_cmpf;    // CMP-like: read AM1, read AM2, flags only
+    logic       fmt2_is_mov_like; // MOV-like: read AM1, write AM2 (no AM2 read)
+    logic       fmt2_is_rmw;     // R-M-W: read AM1, read AM2 addr, compute, write AM2
+    data_size_t fmt2_am1_dim;    // AM1 dimension (SZ_HALF for SCLF, else SZ_WORD)
+
+    always_comb begin
+        fmt2_fp_op     = FP_NONE;
+        fmt2_is_cmpf   = 1'b0;
+        fmt2_is_mov_like = 1'b0;
+        fmt2_is_rmw    = 1'b0;
+        fmt2_am1_dim   = SZ_WORD;
+
+        if (opcode == OP_FP_5C) begin
+            case (fmt2_subop)
+                5'h00: begin fmt2_fp_op = FP_CMPF; fmt2_is_cmpf = 1'b1; end
+                5'h08: begin fmt2_fp_op = FP_MOVF; fmt2_is_mov_like = 1'b1; end
+                5'h09: begin fmt2_fp_op = FP_NEGF; fmt2_is_rmw = 1'b1; end
+                5'h0A: begin fmt2_fp_op = FP_ABSF; fmt2_is_rmw = 1'b1; end
+                5'h10: begin fmt2_fp_op = FP_SCLF; fmt2_is_rmw = 1'b1; fmt2_am1_dim = SZ_HALF; end
+                5'h18: begin fmt2_fp_op = FP_ADDF; fmt2_is_rmw = 1'b1; end
+                5'h19: begin fmt2_fp_op = FP_SUBF; fmt2_is_rmw = 1'b1; end
+                5'h1A: begin fmt2_fp_op = FP_MULF; fmt2_is_rmw = 1'b1; end
+                5'h1B: begin fmt2_fp_op = FP_DIVF; fmt2_is_rmw = 1'b1; end
+                default: ;
+            endcase
+        end else if (opcode == OP_FP_5F) begin
+            case (fmt2_subop)
+                5'h00: begin fmt2_fp_op = FP_CVTWS; fmt2_is_mov_like = 1'b1; end
+                5'h01: begin fmt2_fp_op = FP_CVTSW; fmt2_is_mov_like = 1'b1; end
+                default: ;
+            endcase
+        end
+    end
+
+    // =========================================================================
     // Source dimension override for shift/rotate
     // When d=1 (mod=source/count), shift/rotate source is always byte
     // =========================================================================
@@ -283,7 +326,9 @@ module v60_decode
 
     data_size_t fmt1_mod_dim;
     always_comb begin
-        if (is_fmt1_sys)
+        if (is_fmt2_fp)
+            fmt1_mod_dim = fmt2_am1_dim;
+        else if (is_fmt1_sys)
             fmt1_mod_dim = fmt1_d ? fmt1_src_size : fmt1_dst_size;
         else if (fmt1_src_is_byte && fmt1_d)
             fmt1_mod_dim = SZ_BYTE;
@@ -556,6 +601,258 @@ module v60_decode
     end
 
     // =========================================================================
+    // Format II AM2 decode (for FP dual-AM instructions)
+    // AM2 starts at byte offset (2 + f1_mod_len), uses m2 = ibuf_data[1][5]
+    // =========================================================================
+    logic       f2_am2_m;
+    assign f2_am2_m = ibuf_data[1][5]; // m2 bit
+
+    // Compute AM2 base offset
+    logic [4:0] f2_am2_base;
+    assign f2_am2_base = 5'd2 + f1_mod_len[4:0];
+
+    // AM2 mod byte and fields
+    logic [7:0] f2_am2_mod_byte;
+    assign f2_am2_mod_byte = ibuf_data[f2_am2_base];
+    logic [2:0] f2_am2_hi;
+    logic [4:0] f2_am2_lo;
+    assign f2_am2_hi = f2_am2_mod_byte[7:5];
+    assign f2_am2_lo = f2_am2_mod_byte[4:0];
+
+    // AM2 immediate extraction helpers (relative to AM2 base + 1)
+    logic [7:0] f2_am2_b1, f2_am2_b2, f2_am2_b3, f2_am2_b4;
+    logic [7:0] f2_am2_b5, f2_am2_b6, f2_am2_b7, f2_am2_b8;
+    assign f2_am2_b1 = ibuf_data[f2_am2_base + 5'd1];
+    assign f2_am2_b2 = ibuf_data[f2_am2_base + 5'd2];
+    assign f2_am2_b3 = ibuf_data[f2_am2_base + 5'd3];
+    assign f2_am2_b4 = ibuf_data[f2_am2_base + 5'd4];
+    assign f2_am2_b5 = ibuf_data[f2_am2_base + 5'd5];
+    assign f2_am2_b6 = ibuf_data[f2_am2_base + 5'd6];
+    assign f2_am2_b7 = ibuf_data[f2_am2_base + 5'd7];
+    assign f2_am2_b8 = ibuf_data[f2_am2_base + 5'd8];
+
+    // AM2 immediate value for word-sized (always SZ_WORD for AM2)
+    logic [31:0] f2_am2_imm_val;
+    assign f2_am2_imm_val = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+
+    addr_mode_t f2_am2_am;
+    logic [4:0] f2_am2_reg;
+    logic [31:0] f2_am2_imm;
+    logic [5:0] f2_am2_len;
+    logic       f2_am2_is_mem;
+    logic       f2_am2_auto_inc;
+    logic       f2_am2_auto_dec;
+    logic       f2_am2_needs_indirect;
+    logic [31:0] f2_am2_imm2;
+
+    always_comb begin
+        f2_am2_am              = AM_ERROR;
+        f2_am2_reg             = 5'd0;
+        f2_am2_imm             = 32'h0;
+        f2_am2_len             = 6'd1;
+        f2_am2_is_mem          = 1'b0;
+        f2_am2_auto_inc        = 1'b0;
+        f2_am2_auto_dec        = 1'b0;
+        f2_am2_needs_indirect  = 1'b0;
+        f2_am2_imm2            = 32'h0;
+
+        if (f2_am2_m) begin
+            // m=1 dispatch
+            case (f2_am2_hi)
+                3'd0: begin  // DblDisp8[Rn]
+                    f2_am2_am             = AM_DISP16_REG;
+                    f2_am2_reg            = f2_am2_lo;
+                    f2_am2_imm            = {{24{f2_am2_b1[7]}}, f2_am2_b1};
+                    f2_am2_imm2           = {{24{f2_am2_b2[7]}}, f2_am2_b2};
+                    f2_am2_len            = 6'd3;
+                    f2_am2_is_mem         = 1'b1;
+                    f2_am2_needs_indirect = 1'b1;
+                end
+                3'd1: begin  // DblDisp16[Rn]
+                    f2_am2_am             = AM_DISP16_REG;
+                    f2_am2_reg            = f2_am2_lo;
+                    f2_am2_imm            = {{16{f2_am2_b2[7]}}, f2_am2_b2, f2_am2_b1};
+                    f2_am2_imm2           = {{16{f2_am2_b4[7]}}, f2_am2_b4, f2_am2_b3};
+                    f2_am2_len            = 6'd5;
+                    f2_am2_is_mem         = 1'b1;
+                    f2_am2_needs_indirect = 1'b1;
+                end
+                3'd2: begin  // DblDisp32[Rn]
+                    f2_am2_am             = AM_DISP32_REG;
+                    f2_am2_reg            = f2_am2_lo;
+                    f2_am2_imm            = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                    f2_am2_imm2           = {f2_am2_b8, f2_am2_b7, f2_am2_b6, f2_am2_b5};
+                    f2_am2_len            = 6'd9;
+                    f2_am2_is_mem         = 1'b1;
+                    f2_am2_needs_indirect = 1'b1;
+                end
+                3'd3: begin  // Register
+                    f2_am2_am  = AM_REGISTER;
+                    f2_am2_reg = f2_am2_lo;
+                    f2_am2_len = 6'd1;
+                end
+                3'd4: begin  // AutoInc [Rn]+
+                    f2_am2_am       = AM_REG_INDIRECT_INC;
+                    f2_am2_reg      = f2_am2_lo;
+                    f2_am2_len      = 6'd1;
+                    f2_am2_is_mem   = 1'b1;
+                    f2_am2_auto_inc = 1'b1;
+                end
+                3'd5: begin  // AutoDec -[Rn]
+                    f2_am2_am       = AM_REG_INDIRECT_DEC;
+                    f2_am2_reg      = f2_am2_lo;
+                    f2_am2_len      = 6'd1;
+                    f2_am2_is_mem   = 1'b1;
+                    f2_am2_auto_dec = 1'b1;
+                end
+                default: begin
+                    f2_am2_am  = AM_ERROR;
+                    f2_am2_len = 6'd1;
+                end
+            endcase
+        end else begin
+            // m=0 dispatch
+            case (f2_am2_hi)
+                3'd0: begin  // Disp8[Rn]
+                    f2_am2_am     = AM_DISP16_REG;
+                    f2_am2_reg    = f2_am2_lo;
+                    f2_am2_imm    = {{24{f2_am2_b1[7]}}, f2_am2_b1};
+                    f2_am2_len    = 6'd2;
+                    f2_am2_is_mem = 1'b1;
+                end
+                3'd1: begin  // Disp16[Rn]
+                    f2_am2_am     = AM_DISP16_REG;
+                    f2_am2_reg    = f2_am2_lo;
+                    f2_am2_imm    = {{16{f2_am2_b2[7]}}, f2_am2_b2, f2_am2_b1};
+                    f2_am2_len    = 6'd3;
+                    f2_am2_is_mem = 1'b1;
+                end
+                3'd2: begin  // Disp32[Rn]
+                    f2_am2_am     = AM_DISP32_REG;
+                    f2_am2_reg    = f2_am2_lo;
+                    f2_am2_imm    = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                    f2_am2_len    = 6'd5;
+                    f2_am2_is_mem = 1'b1;
+                end
+                3'd3: begin  // Register Indirect [Rn]
+                    f2_am2_am     = AM_REG_INDIRECT;
+                    f2_am2_reg    = f2_am2_lo;
+                    f2_am2_len    = 6'd1;
+                    f2_am2_is_mem = 1'b1;
+                end
+                3'd4: begin  // DispInd8[Rn]
+                    f2_am2_am             = AM_DISP16_REG;
+                    f2_am2_reg            = f2_am2_lo;
+                    f2_am2_imm            = {{24{f2_am2_b1[7]}}, f2_am2_b1};
+                    f2_am2_len            = 6'd2;
+                    f2_am2_is_mem         = 1'b1;
+                    f2_am2_needs_indirect = 1'b1;
+                end
+                3'd5: begin  // DispInd16[Rn]
+                    f2_am2_am             = AM_DISP16_REG;
+                    f2_am2_reg            = f2_am2_lo;
+                    f2_am2_imm            = {{16{f2_am2_b2[7]}}, f2_am2_b2, f2_am2_b1};
+                    f2_am2_len            = 6'd3;
+                    f2_am2_is_mem         = 1'b1;
+                    f2_am2_needs_indirect = 1'b1;
+                end
+                3'd6: begin  // DispInd32[Rn]
+                    f2_am2_am             = AM_DISP32_REG;
+                    f2_am2_reg            = f2_am2_lo;
+                    f2_am2_imm            = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                    f2_am2_len            = 6'd5;
+                    f2_am2_is_mem         = 1'b1;
+                    f2_am2_needs_indirect = 1'b1;
+                end
+                3'd7: begin  // Group7
+                    if (f2_am2_lo <= 5'd15) begin
+                        f2_am2_am  = AM_IMM_QUICK;
+                        f2_am2_imm = {27'd0, f2_am2_lo};
+                        f2_am2_len = 6'd1;
+                    end else if (f2_am2_lo == 5'd16) begin
+                        f2_am2_am     = AM_PC_DISP16;
+                        f2_am2_imm    = {{24{f2_am2_b1[7]}}, f2_am2_b1};
+                        f2_am2_len    = 6'd2;
+                        f2_am2_is_mem = 1'b1;
+                    end else if (f2_am2_lo == 5'd17) begin
+                        f2_am2_am     = AM_PC_DISP16;
+                        f2_am2_imm    = {{16{f2_am2_b2[7]}}, f2_am2_b2, f2_am2_b1};
+                        f2_am2_len    = 6'd3;
+                        f2_am2_is_mem = 1'b1;
+                    end else if (f2_am2_lo == 5'd18) begin
+                        f2_am2_am     = AM_PC_DISP32;
+                        f2_am2_imm    = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                        f2_am2_len    = 6'd5;
+                        f2_am2_is_mem = 1'b1;
+                    end else if (f2_am2_lo == 5'd19) begin
+                        f2_am2_am     = AM_DIRECT_ADDR;
+                        f2_am2_imm    = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                        f2_am2_len    = 6'd5;
+                        f2_am2_is_mem = 1'b1;
+                    end else if (f2_am2_lo == 5'd20) begin
+                        // Immediate: for AM2 always word (4 bytes)
+                        f2_am2_am  = AM_IMMEDIATE;
+                        f2_am2_imm = f2_am2_imm_val;
+                        f2_am2_len = 6'd5; // 1 mod byte + 4 imm bytes
+                    end else if (f2_am2_lo == 5'd24) begin
+                        f2_am2_am             = AM_PC_DISP16;
+                        f2_am2_imm            = {{24{f2_am2_b1[7]}}, f2_am2_b1};
+                        f2_am2_len            = 6'd2;
+                        f2_am2_is_mem         = 1'b1;
+                        f2_am2_needs_indirect = 1'b1;
+                    end else if (f2_am2_lo == 5'd25) begin
+                        f2_am2_am             = AM_PC_DISP16;
+                        f2_am2_imm            = {{16{f2_am2_b2[7]}}, f2_am2_b2, f2_am2_b1};
+                        f2_am2_len            = 6'd3;
+                        f2_am2_is_mem         = 1'b1;
+                        f2_am2_needs_indirect = 1'b1;
+                    end else if (f2_am2_lo == 5'd26) begin
+                        f2_am2_am             = AM_PC_DISP32;
+                        f2_am2_imm            = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                        f2_am2_len            = 6'd5;
+                        f2_am2_is_mem         = 1'b1;
+                        f2_am2_needs_indirect = 1'b1;
+                    end else if (f2_am2_lo == 5'd27) begin
+                        f2_am2_am             = AM_DIRECT_ADDR;
+                        f2_am2_imm            = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                        f2_am2_len            = 6'd5;
+                        f2_am2_is_mem         = 1'b1;
+                        f2_am2_needs_indirect = 1'b1;
+                    end else if (f2_am2_lo == 5'd28) begin
+                        f2_am2_am             = AM_PC_DISP16;
+                        f2_am2_imm            = {{24{f2_am2_b1[7]}}, f2_am2_b1};
+                        f2_am2_imm2           = {{24{f2_am2_b2[7]}}, f2_am2_b2};
+                        f2_am2_len            = 6'd3;
+                        f2_am2_is_mem         = 1'b1;
+                        f2_am2_needs_indirect = 1'b1;
+                    end else if (f2_am2_lo == 5'd29) begin
+                        f2_am2_am             = AM_PC_DISP16;
+                        f2_am2_imm            = {{16{f2_am2_b2[7]}}, f2_am2_b2, f2_am2_b1};
+                        f2_am2_imm2           = {{16{f2_am2_b4[7]}}, f2_am2_b4, f2_am2_b3};
+                        f2_am2_len            = 6'd5;
+                        f2_am2_is_mem         = 1'b1;
+                        f2_am2_needs_indirect = 1'b1;
+                    end else if (f2_am2_lo == 5'd30) begin
+                        f2_am2_am             = AM_PC_DISP32;
+                        f2_am2_imm            = {f2_am2_b4, f2_am2_b3, f2_am2_b2, f2_am2_b1};
+                        f2_am2_imm2           = {f2_am2_b8, f2_am2_b7, f2_am2_b6, f2_am2_b5};
+                        f2_am2_len            = 6'd9;
+                        f2_am2_is_mem         = 1'b1;
+                        f2_am2_needs_indirect = 1'b1;
+                    end else begin
+                        f2_am2_am  = AM_ERROR;
+                        f2_am2_len = 6'd1;
+                    end
+                end
+                default: begin
+                    f2_am2_am  = AM_ERROR;
+                    f2_am2_len = 6'd1;
+                end
+            endcase
+        end
+    end
+
+    // =========================================================================
     // Format III mod field decode (mod byte at ibuf_data[1])
     // =========================================================================
     logic [2:0] f3_mod_hi;
@@ -578,10 +875,23 @@ module v60_decode
     logic [31:0] fmt3_imm_val;
     logic [2:0]  fmt3_imm_bytes;
     always_comb begin
-        // All Format III control flow ops use SZ_WORD; INC/DEC use ImmQuick
-        // (never full immediate), so always extracting 4 bytes is safe.
-        fmt3_imm_bytes = 3'd4;
-        fmt3_imm_val = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+        // Derive immediate size from opcode for Format III instructions.
+        // TRAP (0xF8/F9) uses SZ_BYTE (1 byte), RETIU/RETIS (0xEA/EB/FA/FB) use SZ_HALF (2 bytes).
+        // All other Format III ops use SZ_WORD or ImmQuick (never full immediate).
+        case (opcode)
+            OP_TRAP_0, OP_TRAP_1: begin
+                fmt3_imm_bytes = 3'd1;
+                fmt3_imm_val = {24'h0, ibuf_data[2]};
+            end
+            OP_RETIU_0, OP_RETIU_1, OP_RETIS_0, OP_RETIS_1: begin
+                fmt3_imm_bytes = 3'd2;
+                fmt3_imm_val = {16'h0, ibuf_data[3], ibuf_data[2]};
+            end
+            default: begin
+                fmt3_imm_bytes = 3'd4;
+                fmt3_imm_val = {ibuf_data[5], ibuf_data[4], ibuf_data[3], ibuf_data[2]};
+            end
+        endcase
     end
 
     always_comb begin
@@ -830,9 +1140,33 @@ module v60_decode
             decoded.is_nop   = 1'b1;
             decoded.inst_len = 6'd1;
 
-        end else if (opcode == OP_RSR) begin
+        // =====================================================================
+        // Phase 10: DBCC / TB (opcodes 0xC6, 0xC7)
+        // =====================================================================
+        end else if (opcode == 8'hC6 || opcode == 8'hC7) begin
+            decoded.format    = FMT_VI;
+            decoded.ctrl_flow = CF_DBCC;
+            decoded.is_branch = 1'b1;
+            decoded.cond      = {ibuf_data[1][7:5], opcode[0]};
+            decoded.reg_dst   = ibuf_data[1][4:0];
+            decoded.imm_value = {{16{ibuf_data[3][7]}}, ibuf_data[3], ibuf_data[2]};
+            decoded.inst_len  = 6'd4;
+            decode_valid      = (ibuf_valid_count >= 5'd4);
+
+        end else if (opcode == OP_BRK) begin
             decoded.format   = FMT_V;
+            decoded.is_nop   = 1'b1;
             decoded.inst_len = 6'd1;
+
+        end else if (opcode == OP_BRKV) begin
+            decoded.format    = FMT_V;
+            decoded.ctrl_flow = CF_BRKV;
+            decoded.inst_len  = 6'd1;
+
+        end else if (opcode == OP_RSR) begin
+            decoded.format    = FMT_V;
+            decoded.ctrl_flow = CF_RSR;
+            decoded.inst_len  = 6'd1;
 
         end else if (opcode == OP_DISPOSE) begin
             decoded.format    = FMT_V;
@@ -869,6 +1203,45 @@ module v60_decode
             decoded.imm_value = {{16{disp16[15]}}, disp16};
             decoded.inst_len  = 6'd3;
             decode_valid      = (ibuf_valid_count >= 5'd3);
+
+        // =====================================================================
+        // Format II: Floating point dual-AM (0x5C, 0x5F)
+        // Byte 0: opcode, Byte 1: [6]=m1/[5]=m2/[4:0]=subop
+        // Bytes 2+: AM1 field, then AM2 field
+        // =====================================================================
+        end else if (is_fmt2_fp && fmt2_fp_op != FP_NONE && ibuf_valid_count >= 5'd2) begin
+            decoded.format    = FMT_II;
+            decoded.data_size = SZ_WORD;
+            decoded.fp_op     = fmt2_fp_op;
+
+            // AM1 → source fields (reuse f1_mod decode, which uses ibuf_data[1][6] as m-bit)
+            decoded.am_src         = f1_mod_am;
+            decoded.reg_src        = f1_mod_reg;
+            decoded.imm_value      = f1_mod_imm;
+            decoded.is_mem_src     = f1_mod_is_mem;
+            decoded.auto_inc       = f1_mod_auto_inc;
+            decoded.auto_dec       = f1_mod_auto_dec;
+            decoded.needs_indirect = f1_mod_needs_indirect;
+            decoded.imm_value2     = f1_mod_imm2;
+
+            // AM2 → destination fields
+            decoded.am_dst          = f2_am2_am;
+            decoded.reg_dst         = f2_am2_reg;
+            decoded.imm_value_dst   = f2_am2_imm;
+            decoded.imm_value2_dst  = f2_am2_imm2;
+            decoded.is_mem_dst      = f2_am2_is_mem;
+            decoded.auto_inc2       = f2_am2_auto_inc;
+            decoded.auto_dec2       = f2_am2_auto_dec;
+            decoded.needs_indirect2 = f2_am2_needs_indirect;
+
+            // For CMPF, AM2 reads data (ReadAM), not address
+            // For R-M-W ops, AM2 reads address (ReadAMAddress) — same AM decode
+
+            // No flags from MOV; all others write flags
+            decoded.writes_flags = (fmt2_fp_op != FP_MOVF);
+
+            decoded.inst_len = 6'd2 + f1_mod_len + f2_am2_len;
+            decode_valid     = (ibuf_valid_count >= (5'd2 + f1_mod_len[4:0] + f2_am2_len[4:0]));
 
         // =====================================================================
         // Format I: Two-operand instructions
@@ -1195,6 +1568,54 @@ module v60_decode
             decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
 
         // =====================================================================
+        // Format III: TRAP (0xF8/0xF9) — conditional software trap
+        // =====================================================================
+        end else if (opcode == OP_TRAP_0 || opcode == OP_TRAP_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_TRAP;
+            decoded.data_size      = SZ_BYTE;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: RETIU (0xEA/0xEB) — return from interrupt (user)
+        // =====================================================================
+        end else if (opcode == OP_RETIU_0 || opcode == OP_RETIU_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_RETIU;
+            decoded.data_size      = SZ_HALF;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
+        // Format III: RETIS (0xFA/0xFB) — return from interrupt (supervisor)
+        // =====================================================================
+        end else if (opcode == OP_RETIS_0 || opcode == OP_RETIS_1) begin
+            decoded.format         = FMT_III;
+            decoded.ctrl_flow      = CF_RETIU;  // Same behavior as RETIU
+            decoded.data_size      = SZ_HALF;
+            decoded.am_dst         = f3_mod_am;
+            decoded.reg_dst        = f3_mod_reg;
+            decoded.imm_value      = f3_mod_imm;
+            decoded.is_mem_dst     = f3_mod_is_mem;
+            decoded.needs_indirect = f3_mod_needs_indirect;
+            decoded.imm_value2     = f3_mod_imm2;
+            decoded.inst_len       = 6'd1 + f3_mod_len;
+            decode_valid           = (ibuf_valid_count >= (5'd1 + f3_mod_len[4:0]));
+
+        // =====================================================================
         // Format I: Recognize 0x80-0xBF range even for Format II encoding
         // (for forward compatibility; treat as unimplemented for now)
         // =====================================================================
@@ -1202,6 +1623,10 @@ module v60_decode
             decoded.format   = FMT_I;
             decoded.inst_len = 6'd3;
             decode_valid     = (ibuf_valid_count >= 5'd3);
+
+        // Format II FP recognized but not enough bytes yet — stall
+        end else if (is_fmt2_fp) begin
+            decode_valid = 1'b0;
 
         end else begin
             // Unknown opcode — treat as 1-byte NOP for now

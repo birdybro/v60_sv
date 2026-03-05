@@ -76,6 +76,12 @@ module v60_cpu
     logic [3:0]  alu_flags_in;
     logic        alu_flag_z, alu_flag_s, alu_flag_ov, alu_flag_cy;
 
+    // FPU signals
+    fp_op_t      fpu_op;
+    logic [31:0] fpu_a, fpu_b, fpu_result;
+    logic [2:0]  fpu_rounding;
+    logic        fpu_flag_z, fpu_flag_s, fpu_flag_ov, fpu_flag_cy;
+
     // Flags
     logic [3:0]  flags_cond;
     logic        flags_cond_met;
@@ -153,8 +159,7 @@ module v60_cpu
     logic fetch_bus_busy;
     assign fetch_bus_busy = bus_if_busy || data_bus_active;
 
-    // Tie off unused signals
-    assign int_ack      = 1'b0;
+    // int_ack driven by control FSM
 
     // =========================================================================
     // Module Instantiations
@@ -253,6 +258,18 @@ module v60_cpu
         .flag_cy  (alu_flag_cy)
     );
 
+    v60_fpu u_fpu (
+        .op       (fpu_op),
+        .a        (fpu_a),
+        .b        (fpu_b),
+        .rounding (fpu_rounding),
+        .result   (fpu_result),
+        .flag_z   (fpu_flag_z),
+        .flag_s   (fpu_flag_s),
+        .flag_ov  (fpu_flag_ov),
+        .flag_cy  (fpu_flag_cy)
+    );
+
     v60_flags u_flags (
         .psw      (psw),
         .cond     (flags_cond),
@@ -311,6 +328,15 @@ module v60_cpu
         .alu_flag_cy         (alu_flag_cy),
         .flags_cond          (flags_cond),
         .flags_cond_met      (flags_cond_met),
+        .fpu_op              (fpu_op),
+        .fpu_a               (fpu_a),
+        .fpu_b               (fpu_b),
+        .fpu_rounding        (fpu_rounding),
+        .fpu_result          (fpu_result),
+        .fpu_flag_z          (fpu_flag_z),
+        .fpu_flag_s          (fpu_flag_s),
+        .fpu_flag_ov         (fpu_flag_ov),
+        .fpu_flag_cy         (fpu_flag_cy),
         .preg_wr_en          (preg_wr_en),
         .preg_addr           (preg_addr),
         .preg_wr_data        (preg_wr_data),
@@ -324,6 +350,9 @@ module v60_cpu
         .data_bus_busy       (bus_if_busy),
         .int_pending         (int_pending),
         .int_vector          (int_vector),
+        .is_nmi              (is_nmi),
+        .int_ack             (int_ack),
+        .current_sp          (current_sp),
         .state_out           (cpu_state),
         .halted              (halted)
     );

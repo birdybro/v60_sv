@@ -26,7 +26,8 @@ enum FsmState {
     ST_RESET = 0, ST_FETCH = 1, ST_DECODE = 2,
     ST_ADDR_MODE_1 = 3, ST_ADDR_MODE_2 = 4,
     ST_EXECUTE = 5, ST_WRITEBACK = 6,
-    ST_HALT = 9
+    ST_HALT = 9,
+    ST_MEM_READ_WAIT = 17
 };
 
 // Scope pointers for DPI calls
@@ -176,8 +177,9 @@ int main(int argc, char** argv) {
         set_top_scope();
         int cur_state = get_cpu_state();
 
-        // Emit trace line on WRITEBACK → FETCH transition (instruction retired)
-        if (prev_state == ST_WRITEBACK && cur_state == ST_FETCH) {
+        // Emit trace line on instruction retirement:
+        // WRITEBACK → FETCH (normal) or MEM_READ_WAIT → FETCH (exception/interrupt)
+        if ((prev_state == ST_WRITEBACK || prev_state == ST_MEM_READ_WAIT) && cur_state == ST_FETCH) {
             if (trace_fp) {
                 set_top_scope();
                 fprintf(trace_fp, "%u,0x%08X,0x%08X",

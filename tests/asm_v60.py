@@ -859,6 +859,155 @@ class V60Asm:
         self.code.extend([opcode, mod])
 
     # =========================================================================
+    # Phase 9: Interrupts & exceptions
+    # =========================================================================
+
+    def brk(self):
+        """BRK — Format V, 1 byte. NOP in MAME."""
+        self.code.append(0xC8)
+
+    def brkv(self):
+        """BRKV — Format V, 1 byte. Overflow exception."""
+        self.code.append(0xC9)
+
+    def rsr(self):
+        """RSR — Format V, 1 byte. Return from subroutine (pop PC)."""
+        self.code.append(0xCA)
+
+    def trap_imm(self, cond, trap_num):
+        """TRAP #(cond<<4|trap_num) — Format III with byte immediate.
+        Opcode 0xF8 (m=0), mod=0xF4 (immediate), 1 byte value."""
+        val = ((cond & 0xF) << 4) | (trap_num & 0xF)
+        self.code.extend([0xF8, 0xF4, val & 0xFF])
+
+    def retiu_imm(self, frame_size):
+        """RETIU #frame_size — Format III with half immediate.
+        Opcode 0xEA (m=0), mod=0xF4 (immediate), 2 byte value."""
+        self.code.extend([0xEA, 0xF4])
+        self.code.extend((frame_size & 0xFFFF).to_bytes(2, 'little'))
+
+    # =========================================================================
+    # Phase 10: Decrement-and-branch (DBCC / TB)
+    # =========================================================================
+
+    def dbcc(self, cond, reg, disp16):
+        """DBCC — generic. Encoding: [0xC6+cond[0], (cond[3:1]<<5)|reg, disp16_lo, disp16_hi]"""
+        opcode = 0xC6 + (cond & 1)
+        byte1 = ((cond >> 1) << 5) | (reg & 0x1F)
+        self.code.extend([opcode, byte1])
+        self.code.extend((disp16 & 0xFFFF).to_bytes(2, 'little', signed=False))
+
+    def dbr(self, reg, disp16):
+        """DBR — decrement and branch always."""
+        self.dbcc(0xA, reg, disp16)
+
+    def dbne(self, reg, disp16):
+        """DBNE — decrement and branch if not equal (Z=0)."""
+        self.dbcc(0x5, reg, disp16)
+
+    def dbe(self, reg, disp16):
+        """DBE — decrement and branch if equal (Z=1)."""
+        self.dbcc(0x4, reg, disp16)
+
+    def dbgt(self, reg, disp16):
+        """DBGT — decrement and branch if greater than."""
+        self.dbcc(0xF, reg, disp16)
+
+    def tb(self, reg, disp16):
+        """TB — test and branch if register == 0."""
+        self.dbcc(0xB, reg, disp16)
+
+    def retis_imm(self, frame_size):
+        """RETIS #frame_size — Format III with half immediate.
+        Opcode 0xFA (m=0), mod=0xF4 (immediate), 2 byte value."""
+        self.code.extend([0xFA, 0xF4])
+        self.code.extend((frame_size & 0xFFFF).to_bytes(2, 'little'))
+
+    # =========================================================================
+    # Format II: Floating Point (0x5C, 0x5F)
+    # byte0 = opcode, byte1 = [6]=m1 [5]=m2 [4:0]=subop
+    # then AM1 mod+data, then AM2 mod+data
+    # =========================================================================
+    def _fmt2_fp_reg_reg(self, opcode, subop, src_reg, dst_reg):
+        """Format II FP: Rsrc, Rdst — both register operands."""
+        m1 = 1  # register → m=1
+        m2 = 1  # register → m=1
+        byte1 = (m1 << 6) | (m2 << 5) | (subop & 0x1F)
+        mod1 = self._encode_mod_register(src_reg)
+        mod2 = self._encode_mod_register(dst_reg)
+        self.code.extend([opcode, byte1, mod1, mod2])
+
+    def _fmt2_fp_imm_reg(self, opcode, subop, imm_val, dst_reg, am1_dim='w'):
+        """Format II FP: #imm, Rdst — immediate AM1, register AM2."""
+        m1 = 0  # immediate → m=0
+        m2 = 1  # register → m=1
+        byte1 = (m1 << 6) | (m2 << 5) | (subop & 0x1F)
+        mod1 = self._encode_mod_immediate()
+        mod2 = self._encode_mod_register(dst_reg)
+        self.code.extend([opcode, byte1, mod1])
+        nbytes = self._size_byte_count(am1_dim)
+        self.code.extend((imm_val & ((1 << (nbytes*8)) - 1)).to_bytes(nbytes, 'little'))
+        self.code.append(mod2)
+
+    # --- FP convenience methods ---
+    def cvt_ws_reg_reg(self, src_reg, dst_reg):
+        """CVT.WS Rsrc, Rdst — int32 → float32."""
+        self._fmt2_fp_reg_reg(0x5F, 0x00, src_reg, dst_reg)
+
+    def cvt_ws_imm_reg(self, imm_val, dst_reg):
+        """CVT.WS #imm, Rdst — int32 immediate → float32."""
+        self._fmt2_fp_imm_reg(0x5F, 0x00, imm_val, dst_reg)
+
+    def cvt_sw_reg_reg(self, src_reg, dst_reg):
+        """CVT.SW Rsrc, Rdst — float32 → int32."""
+        self._fmt2_fp_reg_reg(0x5F, 0x01, src_reg, dst_reg)
+
+    def cvt_sw_imm_reg(self, imm_val, dst_reg):
+        """CVT.SW #imm, Rdst — float32 immediate → int32."""
+        self._fmt2_fp_imm_reg(0x5F, 0x01, imm_val, dst_reg)
+
+    def movf_reg_reg(self, src_reg, dst_reg):
+        """MOVF.S Rsrc, Rdst."""
+        self._fmt2_fp_reg_reg(0x5C, 0x08, src_reg, dst_reg)
+
+    def addf_reg_reg(self, src_reg, dst_reg):
+        """ADDF.S Rsrc, Rdst — dst = dst + src."""
+        self._fmt2_fp_reg_reg(0x5C, 0x18, src_reg, dst_reg)
+
+    def subf_reg_reg(self, src_reg, dst_reg):
+        """SUBF.S Rsrc, Rdst — dst = dst - src."""
+        self._fmt2_fp_reg_reg(0x5C, 0x19, src_reg, dst_reg)
+
+    def mulf_reg_reg(self, src_reg, dst_reg):
+        """MULF.S Rsrc, Rdst — dst = dst * src."""
+        self._fmt2_fp_reg_reg(0x5C, 0x1A, src_reg, dst_reg)
+
+    def divf_reg_reg(self, src_reg, dst_reg):
+        """DIVF.S Rsrc, Rdst — dst = dst / src."""
+        self._fmt2_fp_reg_reg(0x5C, 0x1B, src_reg, dst_reg)
+
+    def negf_reg_reg(self, src_reg, dst_reg):
+        """NEGF.S Rsrc, Rdst — dst = -src."""
+        self._fmt2_fp_reg_reg(0x5C, 0x09, src_reg, dst_reg)
+
+    def absf_reg_reg(self, src_reg, dst_reg):
+        """ABSF.S Rsrc, Rdst — dst = |src|."""
+        self._fmt2_fp_reg_reg(0x5C, 0x0A, src_reg, dst_reg)
+
+    def cmpf_reg_reg(self, src_reg, dst_reg):
+        """CMPF.S Rsrc, Rdst — flags = dst - src."""
+        self._fmt2_fp_reg_reg(0x5C, 0x00, src_reg, dst_reg)
+
+    def sclf_reg_reg(self, src_reg, dst_reg):
+        """SCLF.S Rsrc, Rdst — dst = dst * 2^src (src is half-word count).
+        Note: For reg-reg, AM1 is still the register value (16-bit count)."""
+        self._fmt2_fp_reg_reg(0x5C, 0x10, src_reg, dst_reg)
+
+    def sclf_imm_reg(self, imm_val, dst_reg):
+        """SCLF.S #imm16, Rdst — dst = dst * 2^imm."""
+        self._fmt2_fp_imm_reg(0x5C, 0x10, imm_val, dst_reg, am1_dim='h')
+
+    # =========================================================================
     # Raw data embedding
     # =========================================================================
     def data_byte(self, val):
@@ -2121,6 +2270,304 @@ def build_phase8_test():
     print("Phase 8 test: 21 test cases")
 
 
+def build_phase9_test():
+    """Phase 9 test: Interrupts & exceptions (software only)."""
+    a = V60Asm()
+
+    # Memory layout:
+    #   Code: 0x1000+
+    #   Stack: 0x2000 (grows down)
+    #   SBR/IVT: 0x3000 (page-aligned)
+    #   Vector targets: placed after main code
+
+    BASE = 0x1000
+
+    # =====================================================================
+    # Setup: SP=0x2000, set SBR=0x3000 via LDPR
+    # =====================================================================
+    a.mov_imm_reg('w', 0x00002000, 31)  # SP = 0x2000 — 7B
+    a.mov_imm_reg('w', 0x00003000, 0)   # R0 = 0x3000 (SBR value) — 7B
+    a.mov_imm_reg('w', 5, 1)            # R1 = 5 (PREG_SBR index) — 7B
+    a.ldpr_reg_reg(0, 1)                # LDPR R0, R1 → SBR = 0x3000 — 3B
+
+    # =====================================================================
+    # Test 1: BRK — should behave as NOP (PC advances by 1)
+    # =====================================================================
+    a.mov_imm_reg('w', 0xBBBBBBBB, 10)  # R10 = marker before BRK — 7B
+    a.brk()                              # BRK (NOP) — 1B
+    a.mov_imm_reg('w', 0x11111111, 10)  # R10 = overwritten if BRK was NOP — 7B
+
+    # =====================================================================
+    # Test 2: RSR — push return addr, then RSR pops it
+    # RSR: PC = [SP]; SP += 4
+    # =====================================================================
+    # We'll manually push a return address, then RSR to it.
+    # The return addr will be the instruction after the BR that skips past the target.
+    # Layout:
+    #   push_imm target_addr (6B)  — push return addr
+    #   rsr (1B)                   — should jump to target_addr
+    #   mov_imm_reg BAD (7B)      — should be skipped
+    #   target: mov_imm_reg GOOD (7B)
+    rsr_base = len(a.code)
+    rsr_target = BASE + rsr_base + 6 + 1 + 7  # push(6) + rsr(1) + skip_mov(7)
+    a.push_imm(rsr_target)                     # Push return addr — 6B
+    a.rsr()                                    # RSR — 1B
+    a.mov_imm_reg('w', 0xDEADDEAD, 11)       # R11 = BAD (skipped) — 7B
+    a.mov_imm_reg('w', 0x22222222, 11)        # R11 = 0x22222222 (RSR landed here) — 7B
+
+    # =====================================================================
+    # Test 3: TRAP cond=0xA (always) trap_num=0 → vector 48
+    # Need: IVT[48] at 0x3000 + 48*4 = 0x30C0 → target address
+    # Write IVT entry via MOV.W to memory, then TRAP
+    # =====================================================================
+    # First, write the trap vector target address into IVT
+    # We'll compute the target after we know the layout
+    # For now, use R2 as addr register pointing to IVT entry
+
+    # Write IVT entry for vector 48 at addr 0x30C0
+    a.mov_imm_reg('w', 0x000030C0, 2)   # R2 = IVT entry addr — 7B
+    # Target address will be filled after we know code layout
+    trap_target_fixup = len(a.code)      # Remember position for fixup
+    a.mov_imm_reg('w', 0x00000000, 3)    # R3 = trap target (PLACEHOLDER) — 7B
+    a.mov_reg_mem_rind('w', 3, 2)        # [R2] = R3 (write IVT entry) — 3B
+
+    # Save current PSW so we know what was pushed
+    a.getpsw(12)                         # R12 = PSW before trap
+
+    # Fire the trap
+    a.trap_imm(0xA, 0)                   # TRAP #0xA0 (always, trap 0) — 3B
+    a.mov_imm_reg('w', 0xDEADDEAD, 13)  # R13 = BAD (skipped by trap) — 7B
+    # Trap handler target:
+    trap_target = BASE + len(a.code)
+    a.mov_imm_reg('w', 0x33333333, 13)   # R13 = 0x33333333 (trap handler) — 7B
+    # Save SP so we can verify pushes
+    a.mov_reg_reg('w', 31, 14)           # R14 = SP after trap (should be 0x2000 - 12 = 0x1FF4)
+
+    # =====================================================================
+    # Test 4: TRAP cond=0xB (never) trap_num=1 — should NOT fire
+    # =====================================================================
+    a.trap_imm(0xB, 1)                   # TRAP #0xB1 (never) — 3B
+    a.mov_imm_reg('w', 0x44444444, 15)   # R15 = 0x44444444 (reached = correct) — 7B
+
+    # =====================================================================
+    # Test 5: RETIU — restore PC + PSW from stack, adjust SP by frame_size
+    # Set up a fake interrupt frame: push PSW, push return_addr
+    # Then RETIU #0 should pop return_addr → PC, pop PSW, SP += 0
+    # =====================================================================
+    # Save current PSW
+    a.getpsw(16)                         # R16 = current PSW — 2B
+
+    # Build fake frame: SP already at some value after trap
+    # Push PSW first (will be popped second)
+    a.push_reg(16)                       # Push PSW — 2B
+
+    # Compute return addr for after RETIU
+    retiu_base = len(a.code)
+    retiu_target = BASE + retiu_base + 6 + 4 + 7  # push(6) + retiu(4) + skip_mov(7)
+    a.push_imm(retiu_target)             # Push return PC — 6B
+    a.retiu_imm(0)                       # RETIU #0 — 4B
+    a.mov_imm_reg('w', 0xDEADDEAD, 17)  # R17 = BAD (skipped) — 7B
+    a.mov_imm_reg('w', 0x55555555, 17)   # R17 = 0x55555555 (RETIU landed here) — 7B
+    a.getpsw(18)                         # R18 = PSW after RETIU (should match R16) — 2B
+
+    # =====================================================================
+    # Test 6: BRKV — unconditional exception, vector 21
+    # Push sequence: PC, exc_code(0x15010004), oldPSW, PC+1
+    # Need IVT[21] at 0x3000 + 21*4 = 0x3054 → target address
+    # =====================================================================
+    a.mov_imm_reg('w', 0x00003054, 2)    # R2 = IVT entry addr for vector 21 — 7B
+    brkv_target_fixup = len(a.code)
+    a.mov_imm_reg('w', 0x00000000, 3)    # R3 = brkv target (PLACEHOLDER) — 7B
+    a.mov_reg_mem_rind('w', 3, 2)        # [R2] = R3 (write IVT entry) — 3B
+
+    a.getpsw(19)                         # R19 = PSW before BRKV — 2B
+    a.mov_reg_reg('w', 31, 20)           # R20 = SP before BRKV — 3B
+    a.brkv()                             # BRKV — 1B
+    a.mov_imm_reg('w', 0xDEADDEAD, 21)  # R21 = BAD (skipped) — 7B
+    brkv_target = BASE + len(a.code)
+    a.mov_imm_reg('w', 0x66666666, 21)   # R21 = 0x66666666 (BRKV handler) — 7B
+    a.mov_reg_reg('w', 31, 22)           # R22 = SP after BRKV — 3B
+
+    # =====================================================================
+    # Final HALT
+    # =====================================================================
+    a.halt()
+
+    # =====================================================================
+    # Fixup: patch the target addresses into the MOV instructions
+    # MOV.W #imm, Rn is: opcode(1) byte1(1) mod(1) imm(4) = 7 bytes
+    # The immediate starts at offset +3 within the instruction
+    # =====================================================================
+    struct.pack_into('<I', a.code, trap_target_fixup + 3, trap_target)
+    struct.pack_into('<I', a.code, brkv_target_fixup + 3, brkv_target)
+
+    a.write('tests/phase9_test.bin')
+
+    print("\nPhase 9 test: Interrupts & exceptions")
+    print(f"  Binary size: {len(a.code)} bytes")
+    print(f"  Trap target: 0x{trap_target:08X}")
+    print(f"  BRKV target: 0x{brkv_target:08X}")
+    print(f"  Expected R10 = 0x11111111 (BRK is NOP)")
+    print(f"  Expected R11 = 0x22222222 (RSR landed correctly)")
+    print(f"  Expected R13 = 0x33333333 (TRAP handler reached)")
+    print(f"  Expected R15 = 0x44444444 (TRAP never - not fired)")
+    print(f"  Expected R17 = 0x55555555 (RETIU returned correctly)")
+    print(f"  Expected R21 = 0x66666666 (BRKV handler reached)")
+
+
+def build_phase10_test():
+    """Phase 10 test: Decrement-and-branch (DBCC) + TB.
+    Displacement is from PC of the DBCC instruction itself.
+    ADD.W #imm, Rn = 7 bytes, DBCC = 4 bytes.
+    To loop back over ADD: disp = -7 (ADD starts 7 bytes before DBCC).
+    """
+    a = V60Asm()
+
+    # === Test 1: DBR (always) — R0=3 counter, R1 accumulator ===
+    a.mov_imm_reg('w', 3, 0)    # R0 = 3
+    a.mov_imm_reg('w', 0, 1)    # R1 = 0
+    # loop_start:
+    a.add_imm_reg('w', 1, 1)    # R1 += 1 (7 bytes)
+    a.dbr(0, (-7) & 0xFFFF)     # DBR R0, -7 → back to ADD
+    # 3 iterations: dec 3→2 branch, 2→1 branch, 1→0 fall through. R0=0, R1=3
+
+    # === Test 2: DBNE (!Z) — R2=4 counter, R3 accumulator ===
+    a.mov_imm_reg('w', 4, 2)     # R2 = 4
+    a.mov_imm_reg('w', 0, 3)     # R3 = 0
+    a.cmp_imm_reg('w', 5, 0)     # CMP #5, R0 → 0-5=-5, Z=0
+    # loop:
+    a.add_imm_reg('w', 1, 3)     # R3 += 1 (7 bytes)
+    a.dbne(2, (-7) & 0xFFFF)     # DBNE R2, -7
+    # 4 iterations: Z stays 0; dec 4→3→2→1→0, fall through. R2=0, R3=4
+
+    # === Test 3: DBE (Z) — condition NOT met, fall through immediately ===
+    a.mov_imm_reg('w', 3, 4)     # R4 = 3
+    a.cmp_imm_reg('w', 1, 0)     # CMP #1, R0 → 0-1=-1, Z=0
+    a.add_imm_reg('w', 10, 5)    # R5 += 10 (7 bytes) — "loop body"
+    a.dbe(4, (-7) & 0xFFFF)      # DBE R4, -7 → Z=0, not met → fall through
+    # R4=2 (decremented once), R5=10 (body ran once, no branch back)
+
+    # === Test 4: TB (reg==0) — R6=0 should branch, R7=1 should not ===
+    # Displacement is from PC of TB itself. TB is 4 bytes.
+    # To skip N bytes after TB: disp = 4 + N
+    a.mov_imm_reg('w', 0, 6)     # R6 = 0
+    a.mov_imm_reg('w', 0, 8)     # R8 = 0 (marker)
+    a.tb(6, 12)                   # TB R6, +12 → R6==0, skip 4(TB)+8(code below)
+    # skip (7+1=8 bytes):
+    a.mov_imm_reg('w', 0xDEAD, 8)  # R8 = 0xDEAD (should be skipped)
+    a.nop()
+    # land here:
+    a.mov_imm_reg('w', 1, 7)     # R7 = 1
+    a.tb(7, 12)                   # TB R7, +12 → R7!=0, no branch
+    a.mov_imm_reg('w', 0xBEEF, 9)  # R9 = 0xBEEF (should execute)
+    a.nop()
+
+    # === Test 5: DBGT — R10=2 counter with positive comparison ===
+    a.mov_imm_reg('w', 100, 12)  # R12 = 100
+    a.mov_imm_reg('w', 2, 10)    # R10 = 2
+    a.mov_imm_reg('w', 0, 11)    # R11 = 0
+    a.cmp_imm_reg('w', 50, 12)   # CMP #50, R12 → 100-50=50 > 0 → S=0,OV=0,Z=0
+    # loop:
+    a.add_imm_reg('w', 1, 11)    # R11 += 1 (7 bytes)
+    a.dbgt(10, (-7) & 0xFFFF)    # DBGT R10, -7
+    # 2 iterations: dec 2→1 branch, 1→0 fall through. R10=0, R11=2
+
+    # === Test 6: DBR edge case — R13=1 counter ===
+    a.mov_imm_reg('w', 1, 13)    # R13 = 1
+    a.mov_imm_reg('w', 0, 14)    # R14 = 0
+    a.add_imm_reg('w', 1, 14)    # R14 += 1 (7 bytes)
+    a.dbr(13, (-7) & 0xFFFF)     # DBR R13, -7 → dec to 0, fall through
+    # R13=0, R14=1 (1 iteration only)
+
+    a.halt()
+    a.write('tests/phase10_test.bin')
+
+    print("\nPhase 10 test: DBCC + TB")
+    print(f"  Binary size: {len(a.code)} bytes")
+    print("  Expected results:")
+    print("    Test 1 (DBR):  R0=0, R1=3")
+    print("    Test 2 (DBNE): R2=0, R3=4")
+    print("    Test 3 (DBE):  R4=2, R5=10")
+    print("    Test 4 (TB):   R6=0, R7=1, R8=0, R9=0xBEEF")
+    print("    Test 5 (DBGT): R10=0, R11=2")
+    print("    Test 6 (DBR1): R13=0, R14=1")
+
+
+def build_phase11_test():
+    """Phase 11 test: Floating point single-precision operations."""
+    import struct as st
+    def f2u(f):
+        """Float to uint32 bit pattern."""
+        return st.unpack('<I', st.pack('<f', f))[0]
+
+    a = V60Asm()
+
+    # === Test 1: CVT.WS — int to float ===
+    a.mov_imm_reg('w', 10, 0)       # R0 = 10
+    a.cvt_ws_reg_reg(0, 1)          # R1 = float(10) = 0x41200000
+    a.mov_imm_reg('w', (-5) & 0xFFFFFFFF, 2)  # R2 = -5
+    a.cvt_ws_reg_reg(2, 3)          # R3 = float(-5) = 0xC0A00000
+    a.mov_imm_reg('w', 0, 4)        # R4 = 0
+    a.cvt_ws_reg_reg(4, 5)          # R5 = float(0) = 0x00000000
+
+    # === Test 2: MOVF.S — copy float register ===
+    a.movf_reg_reg(1, 6)            # R6 = R1 = float(10)
+
+    # === Test 3: ADDF.S — 10.0 + 5.0 = 15.0 ===
+    a.mov_imm_reg('w', f2u(5.0), 7)   # R7 = float(5.0) = 0x40A00000
+    a.addf_reg_reg(1, 7)              # R7 = R7 + R1 = 5.0 + 10.0 = 15.0 → 0x41700000
+
+    # === Test 4: SUBF.S — 15.0 - 5.0 = 10.0 ===
+    a.movf_reg_reg(7, 8)              # R8 = 15.0
+    a.mov_imm_reg('w', f2u(5.0), 9)   # R9 = 5.0
+    a.subf_reg_reg(9, 8)              # R8 = R8 - R9 = 15.0 - 5.0 = 10.0 → 0x41200000
+
+    # === Test 5: MULF.S — 10.0 * 3.0 = 30.0 ===
+    a.mov_imm_reg('w', f2u(3.0), 10)  # R10 = 3.0
+    a.mulf_reg_reg(10, 8)             # R8 = R8 * R10 = 10.0 * 3.0 = 30.0 → 0x41F00000
+
+    # === Test 6: DIVF.S — 30.0 / 6.0 = 5.0 ===
+    a.mov_imm_reg('w', f2u(6.0), 11)  # R11 = 6.0
+    a.divf_reg_reg(11, 8)             # R8 = R8 / R11 = 30.0 / 6.0 = 5.0 → 0x40A00000
+
+    # === Test 7: NEGF.S — -(5.0) = -5.0 ===
+    a.negf_reg_reg(8, 12)             # R12 = -R8 = -(5.0) = -5.0 → 0xC0A00000
+
+    # === Test 8: ABSF.S — |(-5.0)| = 5.0 ===
+    a.absf_reg_reg(12, 13)            # R13 = |R12| = |(-5.0)| = 5.0 → 0x40A00000
+
+    # === Test 9: CMPF.S — compare 5.0 vs 10.0, then equal ===
+    a.cmpf_reg_reg(1, 13)             # CMPF R1(10.0), R13(5.0) → 5.0-10.0=-5.0 → S=1, Z=0
+    a.cmpf_reg_reg(13, 8)             # CMPF R13(5.0), R8(5.0)  → 5.0-5.0=0.0  → S=0, Z=1
+
+    # === Test 10: SCLF.S — 1.0 * 2^3 = 8.0 ===
+    a.mov_imm_reg('w', f2u(1.0), 14)  # R14 = 1.0
+    a.mov_imm_reg('w', 3, 15)         # R15 = 3 (scale count)
+    a.sclf_reg_reg(15, 14)            # R14 = 1.0 * 2^3 = 8.0 → 0x41000000
+
+    # === Test 11: CVT.SW — float to int ===
+    a.mov_imm_reg('w', f2u(7.5), 16)  # R16 = 7.5
+    a.cvt_sw_reg_reg(16, 17)          # R17 = int(7.5) = 8 (round to nearest)
+
+    a.halt()
+    a.write('tests/phase11_test.bin')
+
+    print("\nPhase 11 test: Floating point single-precision")
+    print(f"  Binary size: {len(a.code)} bytes")
+    print("  Expected results:")
+    print(f"    Test 1  (CVT.WS):  R1=0x{f2u(10.0):08X}, R3=0x{f2u(-5.0):08X}, R5=0x00000000")
+    print(f"    Test 2  (MOVF):    R6=0x{f2u(10.0):08X}")
+    print(f"    Test 3  (ADDF):    R7=0x{f2u(15.0):08X}")
+    print(f"    Test 4  (SUBF):    R8=0x{f2u(10.0):08X} (after sub)")
+    print(f"    Test 5  (MULF):    R8=0x{f2u(30.0):08X} (after mul)")
+    print(f"    Test 6  (DIVF):    R8=0x{f2u(5.0):08X} (after div)")
+    print(f"    Test 7  (NEGF):    R12=0x{f2u(-5.0):08X}")
+    print(f"    Test 8  (ABSF):    R13=0x{f2u(5.0):08X}")
+    print(f"    Test 9  (CMPF):    flags only")
+    print(f"    Test 10 (SCLF):    R14=0x{f2u(8.0):08X}")
+    print(f"    Test 11 (CVT.SW):  R17=8")
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'phase3':
         build_phase3_test()
@@ -2138,5 +2585,11 @@ if __name__ == '__main__':
         build_phase7_test()
     elif len(sys.argv) > 1 and sys.argv[1] == 'phase8':
         build_phase8_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase9':
+        build_phase9_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase10':
+        build_phase10_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase11':
+        build_phase11_test()
     else:
         build_phase2_test()

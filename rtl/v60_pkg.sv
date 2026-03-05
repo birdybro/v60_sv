@@ -37,6 +37,9 @@ package v60_pkg;
     localparam int PSW_EL0 = 24;  // Execution level bit 0
     localparam int PSW_EL1 = 25;  // Execution level bit 1
     localparam int PSW_IS  = 28;  // Interrupt stack select
+    localparam int PSW_TP  = 27;  // Trace pending
+    localparam int PSW_EM  = 29;  // Emulation mode
+    localparam int PSW_ASA = 31;  // Address space A
 
     // =========================================================================
     // Execution levels
@@ -231,8 +234,31 @@ package v60_pkg;
         CF_PUSH    = 4'd7,
         CF_POP     = 4'd8,
         CF_PUSHM   = 4'd9,
-        CF_POPM    = 4'd10
+        CF_POPM    = 4'd10,
+        CF_RSR     = 4'd11,
+        CF_TRAP    = 4'd12,
+        CF_RETIU   = 4'd13,
+        CF_BRKV    = 4'd14,
+        CF_DBCC    = 4'd15
     } ctrl_flow_t;
+
+    // =========================================================================
+    // Floating point operation type
+    // =========================================================================
+    typedef enum logic [3:0] {
+        FP_NONE   = 4'd0,
+        FP_CMPF   = 4'd1,
+        FP_MOVF   = 4'd2,
+        FP_NEGF   = 4'd3,
+        FP_ABSF   = 4'd4,
+        FP_SCLF   = 4'd5,
+        FP_ADDF   = 4'd6,
+        FP_SUBF   = 4'd7,
+        FP_MULF   = 4'd8,
+        FP_DIVF   = 4'd9,
+        FP_CVTWS  = 4'd10,
+        FP_CVTSW  = 4'd11
+    } fp_op_t;
 
     // =========================================================================
     // System/utility instruction type
@@ -392,6 +418,10 @@ package v60_pkg;
     // Phase 8: TASI (Format III, opcode LSB = m bit)
     localparam logic [7:0] OP_TASI_0    = 8'hE0;
     localparam logic [7:0] OP_TASI_1    = 8'hE1;
+    // Format II FP opcodes
+    localparam logic [7:0] OP_FP_5C     = 8'h5C;
+    localparam logic [7:0] OP_FP_5F     = 8'h5F;
+
     // INC/DEC (Format III, opcode LSB = m bit)
     localparam logic [7:0] OP_DEC_B_0 = 8'hD0;
     localparam logic [7:0] OP_DEC_B_1 = 8'hD1;
@@ -416,7 +446,7 @@ package v60_pkg;
     // =========================================================================
     localparam int IBUF_SIZE    = 24;
     localparam int MAX_INST_LEN = 22;
-    localparam int FETCH_WINDOW = 12;
+    localparam int FETCH_WINDOW = 16;
 
     // =========================================================================
     // Addressing mode encoding (mod field, byte after opcode in Format I/III)
@@ -461,6 +491,12 @@ package v60_pkg;
         logic           src_is_byte;  // Source operand always byte (shift/rotate count)
         data_size_t     dst_size;     // Destination dimension (cross-size MOV)
         sys_op_t        sys_op;       // System operation type
+        fp_op_t         fp_op;        // Floating point operation type
+        logic [31:0]    imm_value_dst;  // AM2 displacement (Format II)
+        logic [31:0]    imm_value2_dst; // AM2 second displacement (Format II dbldisp)
+        logic           auto_inc2;    // AM2 auto-increment
+        logic           auto_dec2;    // AM2 auto-decrement
+        logic           needs_indirect2; // AM2 needs indirect dereference
     } decoded_inst_t;
 
 endpackage

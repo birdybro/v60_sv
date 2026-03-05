@@ -54,7 +54,7 @@ module v60_interrupt
     assign irq_active = ~irq_n;  // Convert to active high
 
     logic irq_enabled;
-    assign irq_enabled = ~psw[PSW_ID];  // Interrupts enabled when ID=0
+    assign irq_enabled = psw[PSW_ID];  // Interrupts enabled when IE=1 (MAME: PSW & (1<<18))
 
     logic irq_any;
     assign irq_any = irq_enabled && (irq_active != 4'h0);
