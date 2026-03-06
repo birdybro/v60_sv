@@ -23,7 +23,7 @@ RTL_SRCS     = $(RTL_DIR)/v60_pkg.sv \
                $(RTL_DIR)/v60_cpu.sv
 TB_SRCS      = $(TB_DIR)/tb_memory.sv \
                $(TB_DIR)/tb_v60_top.sv
-CPP_SRCS     = sim_main.cpp v60_fp.cpp
+CPP_SRCS     = sim_main.cpp v60_fp.cpp v60_string.cpp
 
 OBJ_DIR      = obj_dir
 SIM_BIN      = $(OBJ_DIR)/Vtb_v60_top

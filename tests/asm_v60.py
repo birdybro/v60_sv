@@ -1019,10 +1019,248 @@ class V60Asm:
     def data_dword(self, val):
         self.code.extend((val & 0xFFFFFFFF).to_bytes(4, 'little'))
 
+    # =========================================================================
+    # Phase 12/13: String/Bitfield/Decimal operations
+    # Format 7A: opcode + subop + AM1 + len1 + AM2 + len2
+    # Format 7B: opcode + subop + AM1 + ext + AM2
+    # Format 7C: opcode + subop + AM1 + AM2 + ext
+    # =========================================================================
+
+    def _encode_len_byte(self, length):
+        """Encode a length byte: literal (0-127) or register ref (0x80|reg)."""
+        if isinstance(length, tuple) and length[0] == 'reg':
+            return 0x80 | (length[1] & 0x1F)
+        return length & 0x7F
+
+    def _str_fmt7a(self, opcode, subop_base, m1, m2, am1_bytes, len1, am2_bytes, len2):
+        """Emit Format 7A instruction."""
+        subop = subop_base | (0x40 if m1 else 0) | (0x20 if m2 else 0)
+        self.code.append(opcode)
+        self.code.append(subop)
+        self.code.extend(am1_bytes)
+        self.code.append(self._encode_len_byte(len1))
+        self.code.extend(am2_bytes)
+        self.code.append(self._encode_len_byte(len2))
+
+    def _str_fmt7b(self, opcode, subop_base, m1, m2, am1_bytes, ext, am2_bytes):
+        """Emit Format 7B instruction."""
+        subop = subop_base | (0x40 if m1 else 0) | (0x20 if m2 else 0)
+        self.code.append(opcode)
+        self.code.append(subop)
+        self.code.extend(am1_bytes)
+        self.code.append(self._encode_len_byte(ext))
+        self.code.extend(am2_bytes)
+
+    def _str_fmt7c(self, opcode, subop_base, m1, m2, am1_bytes, am2_bytes, ext):
+        """Emit Format 7C instruction."""
+        subop = subop_base | (0x40 if m1 else 0) | (0x20 if m2 else 0)
+        self.code.append(opcode)
+        self.code.append(subop)
+        self.code.extend(am1_bytes)
+        self.code.extend(am2_bytes)
+        self.code.append(self._encode_len_byte(ext))
+
+    def _am_reg_indirect_bytes(self, reg):
+        """AM bytes for register indirect [Rn] (m=0, group=3)."""
+        return bytes([0x60 | (reg & 0x1F)])
+
+    def _am_register_bytes(self, reg):
+        """AM bytes for register direct (m=1, group=3)."""
+        return bytes([0x60 | (reg & 0x1F)])
+
+    def _am_direct_addr_bytes(self, addr):
+        """AM bytes for direct address (m=0, group7, sub=19)."""
+        return bytes([0xF3]) + struct.pack('<I', addr & 0xFFFFFFFF)
+
+    def _am_immediate_byte_bytes(self, val):
+        """AM bytes for immediate byte (m=0, mod=0xF4, 1 value byte)."""
+        return bytes([0xF4, val & 0xFF])
+
+    def _am_immediate_half_bytes(self, val):
+        """AM bytes for immediate half (m=0, mod=0xF4, 2 value bytes)."""
+        return bytes([0xF4]) + struct.pack('<H', val & 0xFFFF)
+
+    def _am_immediate_word_bytes(self, val):
+        """AM bytes for immediate word (m=0, mod=0xF4, 4 value bytes)."""
+        return bytes([0xF4]) + struct.pack('<I', val & 0xFFFFFFFF)
+
+    def _am_imm_quick_bytes(self, val):
+        """AM bytes for immediate quick (m=0, group7, sub=val, 0-15)."""
+        return bytes([0xE0 | (val & 0x0F)])
+
+    # --- MOVC (byte string move) ---
+    def movcub(self, am1_bytes, m1, len1, am2_bytes, m2, len2):
+        """MOVCUB: Move string upward byte."""
+        self._str_fmt7a(0x58, 0x08, m1, m2, am1_bytes, len1, am2_bytes, len2)
+
+    def movcdb(self, am1_bytes, m1, len1, am2_bytes, m2, len2):
+        """MOVCDB: Move string downward byte."""
+        self._str_fmt7a(0x58, 0x09, m1, m2, am1_bytes, len1, am2_bytes, len2)
+
+    def movcfub(self, am1_bytes, m1, len1, am2_bytes, m2, len2):
+        """MOVCFUB: Move string upward byte with fill."""
+        self._str_fmt7a(0x58, 0x0A, m1, m2, am1_bytes, len1, am2_bytes, len2)
+
+    # --- CMPC (byte string compare) ---
+    def cmpcb(self, am1_bytes, m1, len1, am2_bytes, m2, len2):
+        """CMPCB: Compare string byte."""
+        self._str_fmt7a(0x58, 0x00, m1, m2, am1_bytes, len1, am2_bytes, len2)
+
+    # --- SCHC (search character) ---
+    def schcub(self, am1_bytes, m1, ext, am2_bytes, m2):
+        """SCHCUB: Search character upward byte."""
+        self._str_fmt7b(0x58, 0x18, m1, m2, am1_bytes, ext, am2_bytes)
+
+    def skpcub(self, am1_bytes, m1, ext, am2_bytes, m2):
+        """SKPCUB: Skip character upward byte."""
+        self._str_fmt7b(0x58, 0x1A, m1, m2, am1_bytes, ext, am2_bytes)
+
+    # --- EXTBF (bitfield extract) ---
+    def extbfz(self, am1_bytes, m1, ext, am2_bytes, m2):
+        """EXTBFZ: Extract bitfield zero-extended."""
+        self._str_fmt7b(0x5D, 0x09, m1, m2, am1_bytes, ext, am2_bytes)
+
+    def extbfs(self, am1_bytes, m1, ext, am2_bytes, m2):
+        """EXTBFS: Extract bitfield sign-extended."""
+        self._str_fmt7b(0x5D, 0x08, m1, m2, am1_bytes, ext, am2_bytes)
+
+    # --- INSBF (bitfield insert) ---
+    def insbfr(self, am1_bytes, m1, am2_bytes, m2, ext):
+        """INSBFR: Insert bitfield right-aligned."""
+        self._str_fmt7c(0x5D, 0x18, m1, m2, am1_bytes, am2_bytes, ext)
+
+    # --- Decimal (0x59) ---
+    def adddc(self, am1_bytes, m1, am2_bytes, m2, ext):
+        """ADDDC: Add decimal with carry."""
+        self._str_fmt7c(0x59, 0x00, m1, m2, am1_bytes, am2_bytes, ext)
+
+    def subdc(self, am1_bytes, m1, am2_bytes, m2, ext):
+        """SUBDC: Subtract decimal with carry."""
+        self._str_fmt7c(0x59, 0x01, m1, m2, am1_bytes, am2_bytes, ext)
+
+    # --- Bit string (0x5B) ---
+    def sch0bsu(self, am1_bytes, m1, ext, am2_bytes, m2):
+        """SCH0BSU: Search 0-bit string upward."""
+        self._str_fmt7b(0x5B, 0x00, m1, m2, am1_bytes, ext, am2_bytes)
+
+    def sch1bsu(self, am1_bytes, m1, ext, am2_bytes, m2):
+        """SCH1BSU: Search 1-bit string upward."""
+        self._str_fmt7b(0x5B, 0x02, m1, m2, am1_bytes, ext, am2_bytes)
+
     def write(self, filename):
         with open(filename, 'wb') as f:
             f.write(self.code)
         print(f"Wrote {len(self.code)} bytes to {filename}")
+
+
+def build_phase12_test():
+    """Build Phase 12/13 test: String, bitfield, and decimal operations."""
+    a = V60Asm()
+
+    # =================================================================
+    # Data area at offset 0x200 (absolute addr 0x1200 when loaded at 0x1000)
+    # =================================================================
+    DATA_BASE = 0x1200
+
+    # We'll store test data at fixed memory locations after the code.
+    # The code will use direct address AM to reference data.
+
+    # --- Test 1: MOVCUB (move string upward byte) ---
+    # Source: "Hello" (5 bytes at DATA_BASE+0)
+    # Dest: 5 bytes at DATA_BASE+0x10
+    # Set R26 = fill char (not used here since lenop1==lenop2)
+
+    # First, set up R0 = source addr, R1 = dest addr using MOV immediate
+    a.mov_imm_reg('w', DATA_BASE, 0)       # R0 = source addr
+    a.mov_imm_reg('w', DATA_BASE + 0x10, 1)  # R1 = dest addr
+
+    # MOVCUB: src=[R0], len=5, dst=[R1], len=5
+    # AM1: [R0] (m=0, reg_indirect), AM2: [R1] (m=0, reg_indirect)
+    a.movcub(a._am_reg_indirect_bytes(0), False, 5,
+             a._am_reg_indirect_bytes(1), False, 5)
+    # After: R28=R0+5, R27=R1+5
+
+    # Verify: read first byte of dest to R2
+    a.mov_mem_rind_reg('b', 1, 2)  # R2 = [R1] (should be 'H'=0x48)
+
+    # --- Test 2: CMPCB (compare strings, equal) ---
+    # Compare source with dest (should be equal after MOVCUB)
+    a.mov_imm_reg('w', DATA_BASE, 0)       # R0 = source
+    a.mov_imm_reg('w', DATA_BASE + 0x10, 1)  # R1 = dest
+    a.cmpcb(a._am_reg_indirect_bytes(0), False, 5,
+            a._am_reg_indirect_bytes(1), False, 5)
+    # After: Z=1 (equal), S=0
+
+    # --- Test 3: SCHCUB (search character) ---
+    # Search for 'l' (0x6C) in "Hello"
+    a.mov_imm_reg('w', DATA_BASE, 0)       # R0 = string addr
+    a.mov_imm_reg('b', 0x6C, 3)            # R3 = search char 'l'
+    # SCHCUB: AM1=[R0] (address), ext=5, AM2=R3 (value), m2=1 (register)
+    a.schcub(a._am_reg_indirect_bytes(0), False, 5,
+             a._am_register_bytes(3), True)
+    # After: R28=addr of 'l', R27=offset (2), Z=0 (found)
+
+    # --- Test 4: SKPCUB (skip matching chars) ---
+    # Skip 'H' chars from start — should stop at index 1 (first non-'H')
+    a.mov_imm_reg('w', DATA_BASE, 0)       # R0 = string addr
+    a.mov_imm_reg('b', 0x48, 3)            # R3 = 'H'
+    a.skpcub(a._am_reg_indirect_bytes(0), False, 5,
+             a._am_register_bytes(3), True)
+    # After: R28=addr+1, R27=1, Z=0
+
+    # --- Test 5: MOVCFUB (move with fill) ---
+    # Src: 3 bytes, Dst: 5 bytes — should fill remaining 2 with R26
+    a.mov_imm_reg('w', DATA_BASE, 0)           # R0 = source (3 bytes "Hel")
+    a.mov_imm_reg('w', DATA_BASE + 0x20, 1)    # R1 = dest (5 bytes)
+    a.mov_imm_reg('b', 0x2A, 26)               # R26 = fill char '*'
+    a.movcfub(a._am_reg_indirect_bytes(0), False, 3,
+              a._am_reg_indirect_bytes(1), False, 5)
+    # After: dest = "Hel**", R28=src+3, R27=dst+5
+
+    # Read byte 3 of dest to verify fill
+    a.mov_imm_reg('w', DATA_BASE + 0x23, 4)  # R4 = &dest[3]
+    a.mov_mem_rind_reg('b', 4, 5)             # R5 = dest[3] (should be 0x2A='*')
+
+    # --- Test 6: EXTBFZ (extract bitfield zero-extended) ---
+    # Extract 4 bits starting at bit 0 from a word in memory
+    # Store 0xABCD1234 at DATA_BASE+0x30, point R6 at it
+    a.mov_imm_reg('w', DATA_BASE + 0x30, 6)  # R6 = address of test value
+    # EXTBFZ: AM1=[R6] (reg indirect, m=0), ext=4 (4 bits), AM2=R7 (register, m=1)
+    # BitReadAM with RegisterIndirect: reads dword from [R6], bamoffset=0
+    # result = (0xABCD1234 >> 0) & ((1<<4)-1) = 0x4
+    a.extbfz(a._am_reg_indirect_bytes(6), False, 4,
+             a._am_register_bytes(7), True)
+    # After: R7 = 0x00000004 (low 4 bits of 0xABCD1234)
+
+    # --- Test 7: ADDDC (BCD add) ---
+    # 0x25 + 0x37 = 62 decimal, no carry
+    a.mov_imm_reg('b', 0x37, 8)            # R8 = 0x37
+    a.adddc(a._am_immediate_byte_bytes(0x25), False,
+            a._am_register_bytes(8), True, 0)
+    # After: R8 = 0x62, CY=0, Z=0
+
+    a.halt()
+
+    # =================================================================
+    # Data section (fill with test data)
+    # =================================================================
+    # Pad code to reach DATA_BASE offset (0x200)
+    while len(a.code) < 0x200:
+        a.code.append(0x00)
+
+    # "Hello" at DATA_BASE
+    a.code.extend(b'Hello')
+    # Padding
+    while len(a.code) < 0x210:
+        a.code.append(0x00)
+    # Dest area at DATA_BASE+0x10 (initially zeros)
+    while len(a.code) < 0x230:
+        a.code.append(0x00)
+
+    # EXTBFZ test value at DATA_BASE+0x30 = 0xABCD1234 (little-endian)
+    a.code.extend([0x34, 0x12, 0xCD, 0xAB])
+
+    a.write('tests/phase12_test.bin')
 
 
 def build_phase2_test():
@@ -2591,5 +2829,7 @@ if __name__ == '__main__':
         build_phase10_test()
     elif len(sys.argv) > 1 and sys.argv[1] == 'phase11':
         build_phase11_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase12':
+        build_phase12_test()
     else:
         build_phase2_test()

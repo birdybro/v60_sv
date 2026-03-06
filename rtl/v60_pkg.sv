@@ -421,6 +421,12 @@ package v60_pkg;
     // Format II FP opcodes
     localparam logic [7:0] OP_FP_5C     = 8'h5C;
     localparam logic [7:0] OP_FP_5F     = 8'h5F;
+    // String/bitfield/decimal opcodes (Format VII, dispatch via sub-opcode tables)
+    localparam logic [7:0] OP_STR_58    = 8'h58;  // Byte string (MOVC/CMPC/SCHC/SKPC)
+    localparam logic [7:0] OP_STR_59    = 8'h59;  // Decimal (ADDDC/SUBDC/CVTD)
+    localparam logic [7:0] OP_STR_5A    = 8'h5A;  // Half string (MOVC/CMPC/SCHC/SKPC)
+    localparam logic [7:0] OP_STR_5B    = 8'h5B;  // Bit string (MOVBS/SCHBS)
+    localparam logic [7:0] OP_STR_5D    = 8'h5D;  // Bitfield (EXTBF/INSBF)
 
     // INC/DEC (Format III, opcode LSB = m bit)
     localparam logic [7:0] OP_DEC_B_0 = 8'hD0;

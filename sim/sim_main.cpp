@@ -5,6 +5,7 @@
 #include <verilated.h>
 #include <verilated_vcd_c.h>
 #include "Vtb_v60_top.h"
+#include "Vtb_v60_top___024root.h"
 #include "svdpi.h"
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +20,11 @@ extern "C" {
     extern int is_halted();
     extern void mem_write_byte(int addr, int data);
     extern int mem_read_byte(int addr);
+    extern void v60_string_init();
+    extern void v60_string_sync_mem();
+    extern int  v60_string_get_num_mem_writes();
+    extern void v60_string_get_mem_write(int idx, int* addr, int* data);
+    extern void v60_string_clear_mem_writes();
 }
 
 // V60 FSM state enum (matches v60_pkg::fsm_state_t)
@@ -119,6 +125,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Initialize string/bitfield/decimal DPI-C module
+    v60_string_init();
+
     // Trace CSV output
     FILE* trace_fp = nullptr;
     if (trace_file) {
@@ -146,6 +155,9 @@ int main(int argc, char** argv) {
     }
     setup_reset_vector(base_addr);
 
+    // Sync shadow memory for string operations
+    v60_string_sync_mem();
+
     // Reset sequence
     top->rst_n = 0;
     for (int i = 0; i < 4; i++) {
@@ -169,10 +181,26 @@ int main(int argc, char** argv) {
         top->eval();
         if (tfp) tfp->dump(cycle * 2 + 8);
 
+        // Debug: removed
+
         // Clock high
         top->clk = 1;
         top->eval();
         if (tfp) tfp->dump(cycle * 2 + 9);
+
+        // Apply deferred memory writes from string DPI directly to model array
+        {
+            int nwr = v60_string_get_num_mem_writes();
+            if (nwr > 0) {
+                for (int i = 0; i < nwr; i++) {
+                    int addr, data;
+                    v60_string_get_mem_write(i, &addr, &data);
+                    if (addr >= 0 && addr < (1 << 20))
+                        top->rootp->tb_v60_top__DOT__u_mem__DOT__mem[addr] = (uint8_t)data;
+                }
+                v60_string_clear_mem_writes();
+            }
+        }
 
         set_top_scope();
         int cur_state = get_cpu_state();

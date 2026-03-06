@@ -1624,6 +1624,18 @@ module v60_decode
             decoded.inst_len = 6'd3;
             decode_valid     = (ibuf_valid_count >= 5'd3);
 
+        // Format VII: String/bitfield/decimal (0x58, 0x59, 0x5A, 0x5B, 0x5D)
+        // These are fully handled by DPI-C; RTL just needs to identify them
+        end else if (opcode == OP_STR_58 || opcode == OP_STR_59 ||
+                     opcode == OP_STR_5A || opcode == OP_STR_5B ||
+                     opcode == OP_STR_5D) begin
+            if (ibuf_valid_count >= 5'd2) begin
+                decoded.format   = FMT_VII;
+                decoded.inst_len = 6'd2; // placeholder; real length from DPI
+            end else begin
+                decode_valid = 1'b0; // stall until we have opcode + subop
+            end
+
         // Format II FP recognized but not enough bytes yet — stall
         end else if (is_fmt2_fp) begin
             decode_valid = 1'b0;

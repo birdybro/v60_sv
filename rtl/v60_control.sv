@@ -1,7 +1,7 @@
 /* verilator lint_off UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDPARAM */
 // v60_control.sv — Main FSM controller
-// Phase 11: Floating point (0x5C, 0x5F) with dual-AM FSM
+// Phase 12/13: String, bitfield, decimal ops via DPI-C (0x58-0x5D)
 
 module v60_control
     import v60_pkg::*;
@@ -120,6 +120,24 @@ module v60_control
     logic [1:0]  fp_phase;         // 0=reading AM1, 1=reading AM2
     logic [31:0] fp_src_val;       // AM1 value (saved across phases)
     logic [31:0] temp_addr2;       // AM2 effective address
+
+    // String/bitfield/decimal DPI-C interface
+    import "DPI-C" function void v60_string_exec(
+        input int pc, input int psw,
+        output int inst_len, output int new_psw,
+        output int num_wr,
+        output int wr0_idx, output int wr0_val,
+        output int wr1_idx, output int wr1_val,
+        output int wr2_idx, output int wr2_val
+    );
+
+    // String operation result registers
+    logic [5:0]  str_inst_len;
+    logic [31:0] str_new_psw;
+    logic [2:0]  str_num_wr;
+    logic [4:0]  str_wr_idx [3];
+    logic [31:0] str_wr_val [3];
+    logic [1:0]  str_wr_step;     // current write step in STRING_LOOP
 
     // Interrupt/exception state
     logic [31:0] saved_psw;        // Old PSW during interrupt/exception
@@ -297,6 +315,10 @@ module v60_control
             fp_phase        <= 2'd0;
             fp_src_val      <= 32'h0;
             temp_addr2      <= 32'h0;
+            str_inst_len    <= 6'd0;
+            str_new_psw     <= 32'h0;
+            str_num_wr      <= 3'd0;
+            str_wr_step     <= 2'd0;
         end else begin
             state <= next_state;
 
@@ -541,6 +563,38 @@ module v60_control
 
                     // Auto-decrement AM2 base register
                     // (handled in writeback via auto_dec2)
+                end
+
+                // --- Format VII: string/bitfield/decimal DPI call ---
+                if (inst_r.format == FMT_VII) begin
+                    begin
+                        int dpi_ilen, dpi_psw, dpi_nwr;
+                        int dpi_w0i, dpi_w0v, dpi_w1i, dpi_w1v, dpi_w2i, dpi_w2v;
+                        v60_string_exec(
+                            int'(pc), int'(psw),
+                            dpi_ilen, dpi_psw, dpi_nwr,
+                            dpi_w0i, dpi_w0v, dpi_w1i, dpi_w1v, dpi_w2i, dpi_w2v
+                        );
+                        str_inst_len  <= dpi_ilen[5:0];
+                        str_new_psw   <= dpi_psw[31:0];
+                        str_num_wr    <= dpi_nwr[2:0];
+                        str_wr_idx[0] <= dpi_w0i[4:0];
+                        str_wr_val[0] <= dpi_w0v[31:0];
+                        str_wr_idx[1] <= dpi_w1i[4:0];
+                        str_wr_val[1] <= dpi_w1v[31:0];
+                        str_wr_idx[2] <= dpi_w2i[4:0];
+                        str_wr_val[2] <= dpi_w2v[31:0];
+                        str_wr_step   <= 2'd0;
+                    end
+                end
+            end
+
+            // ================================================================
+            // ST_STRING_LOOP: increment write step counter
+            // ================================================================
+            if (state == ST_STRING_LOOP) begin
+                if (str_wr_step < str_num_wr[1:0]) begin
+                    str_wr_step <= str_wr_step + 2'd1;
                 end
             end
 
@@ -860,8 +914,12 @@ module v60_control
                     CF_DBCC: next_state = ST_WRITEBACK; // no memory access
 
                     default: begin
+                        // Format VII: string/bitfield/decimal — go to STRING_LOOP
+                        if (inst_r.format == FMT_VII) begin
+                            next_state = ST_STRING_LOOP;
+                        end
                         // Format II FP: dual-AM next state
-                        if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
+                        else if (inst_r.format == FMT_II && inst_r.fp_op != FP_NONE) begin
                             if (inst_r.is_mem_src)
                                 // Need to read AM1 from memory first
                                 next_state = ST_MEM_READ;
@@ -1039,6 +1097,14 @@ module v60_control
                         endcase
                     end
                 end
+            end
+
+            ST_STRING_LOOP: begin
+                // Multi-step register writes from string/bitfield/decimal DPI
+                if (str_wr_step < str_num_wr[1:0])
+                    next_state = ST_STRING_LOOP; // more writes
+                else
+                    next_state = ST_WRITEBACK;   // done, finalize
             end
 
             ST_WRITEBACK: begin
@@ -1233,6 +1299,11 @@ module v60_control
                     // =========================================================
                     default: begin
                         case (inst_r.format)
+                            FMT_VII: begin
+                                // String/bitfield/decimal: DPI call in always_ff block
+                                // (combinational block just needs to not do anything)
+                            end
+
                             FMT_V: begin
                                 // NOP / DISPOSE — do nothing here for NOP
                             end
@@ -1974,6 +2045,18 @@ module v60_control
             end
 
             // =================================================================
+            // ST_STRING_LOOP: apply register writes from string/bitfield/decimal DPI
+            // =================================================================
+            ST_STRING_LOOP: begin
+                if (str_wr_step < str_num_wr[1:0]) begin
+                    rf_wr_en   = 1'b1;
+                    rf_wr_addr = str_wr_idx[str_wr_step];
+                    rf_wr_data = str_wr_val[str_wr_step];
+                    rf_wr_size = SZ_WORD;
+                end
+            end
+
+            // =================================================================
             // ST_WRITEBACK
             // =================================================================
             ST_WRITEBACK: begin
@@ -2161,8 +2244,17 @@ module v60_control
                     end
 
                     default: begin
+                        // Format VII: string/bitfield/decimal — flush and refetch
+                        if (inst_r.format == FMT_VII) begin
+                            pc_wr_en         = 1'b1;
+                            pc_wr_data       = pc + {26'h0, str_inst_len};
+                            psw_wr_en        = 1'b1;
+                            psw_wr_data      = str_new_psw;
+                            fetch_flush      = 1'b1;
+                            fetch_flush_addr = pc + {26'h0, str_inst_len};
+                        end
                         // Standard writeback
-                        if (!(inst_r.is_branch && flags_cond_met)) begin
+                        else if (!(inst_r.is_branch && flags_cond_met)) begin
                             fetch_consume_count = inst_r.inst_len;
                             fetch_consume_valid = 1'b1;
                             pc_wr_en   = 1'b1;

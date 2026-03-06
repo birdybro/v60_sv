@@ -107,19 +107,48 @@ module v60_bus_if
 
                 BIF_CYCLE1_WAIT: begin
                     if (bus_ready && lat_type == BUS_READ) begin
-                        // Capture first read data
-                        if (BUS_BYTES == 2)
-                            read_accum[15:0] <= bus_rdata[15:0];
-                        else
+                        if (BUS_BYTES == 2) begin
+                            // Normalize: extract relevant bytes based on address alignment
+                            case (lat_size)
+                                SZ_BYTE: begin
+                                    if (lat_addr[0])
+                                        read_accum[7:0] <= bus_rdata[15:8]; // odd: high byte
+                                    else
+                                        read_accum[7:0] <= bus_rdata[7:0];  // even: low byte
+                                end
+                                SZ_HALF: begin
+                                    if (lat_addr[0])
+                                        // Unaligned half: first byte is in high lane
+                                        read_accum[7:0] <= bus_rdata[15:8];
+                                    else
+                                        read_accum[15:0] <= bus_rdata[15:0]; // aligned
+                                end
+                                SZ_WORD: begin
+                                    read_accum[15:0] <= bus_rdata[15:0];
+                                end
+                                default:
+                                    read_accum[15:0] <= bus_rdata[15:0];
+                            endcase
+                        end else
                             read_accum <= {{(32-DATA_WIDTH){1'b0}}, bus_rdata};
                     end
                 end
 
                 BIF_CYCLE2_WAIT: begin
                     if (bus_ready && lat_type == BUS_READ) begin
-                        if (BUS_BYTES == 2)
-                            read_accum[31:16] <= bus_rdata[15:0];
-                        else
+                        if (BUS_BYTES == 2) begin
+                            case (lat_size)
+                                SZ_HALF: begin
+                                    // Unaligned half: second byte is in low lane of next word
+                                    read_accum[15:8] <= bus_rdata[7:0];
+                                end
+                                SZ_WORD: begin
+                                    read_accum[31:16] <= bus_rdata[15:0];
+                                end
+                                default:
+                                    read_accum[31:16] <= bus_rdata[15:0];
+                            endcase
+                        end else
                             read_accum[31:16] <= bus_rdata[15:0];
                     end
                 end
@@ -170,21 +199,16 @@ module v60_bus_if
 
         case (state)
             BIF_CYCLE1, BIF_CYCLE1_WAIT: begin
-                bus_addr = lat_addr[ADDR_WIDTH-1:0];
+                // Word-align bus address for multi-byte bus
+                if (BUS_BYTES == 2)
+                    bus_addr = {lat_addr[ADDR_WIDTH-1:1], 1'b0};
+                else
+                    bus_addr = {lat_addr[ADDR_WIDTH-1:2], 2'b00};
                 bus_as_n = 1'b0;
                 if (lat_type == BUS_READ) begin
                     bus_rd_n = 1'b0;
-                    // Byte enables based on address alignment and size
-                    if (BUS_BYTES == 2) begin
-                        case (lat_size)
-                            SZ_BYTE: bus_be = lat_addr[0] ? 2'b10 : 2'b01;
-                            SZ_HALF: bus_be = lat_addr[0] ? 2'b01 : 2'b11;
-                            SZ_WORD: bus_be = 2'b11;
-                            default: bus_be = 2'b01;
-                        endcase
-                    end else begin
-                        bus_be = '1;  // Simplified for 32-bit bus
-                    end
+                    // Always read full bus word for reads (simpler byte extraction)
+                    bus_be = '1;
                 end else if (lat_type == BUS_WRITE) begin
                     bus_wr_n = 1'b0;
                     if (BUS_BYTES == 2) begin
@@ -215,7 +239,11 @@ module v60_bus_if
             end
 
             BIF_CYCLE2, BIF_CYCLE2_WAIT: begin
-                bus_addr = lat_addr[ADDR_WIDTH-1:0] + ADDR_WIDTH'(BUS_BYTES);
+                // Second bus cycle: aligned address + bus width
+                if (BUS_BYTES == 2)
+                    bus_addr = {lat_addr[ADDR_WIDTH-1:1], 1'b0} + ADDR_WIDTH'(BUS_BYTES);
+                else
+                    bus_addr = {lat_addr[ADDR_WIDTH-1:2], 2'b00} + ADDR_WIDTH'(BUS_BYTES);
                 bus_as_n = 1'b0;
                 if (lat_type == BUS_READ) begin
                     bus_rd_n = 1'b0;

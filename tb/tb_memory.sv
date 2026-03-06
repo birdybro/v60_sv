@@ -1,7 +1,6 @@
 /* verilator lint_off UNUSEDSIGNAL */
 // tb_memory.sv — Simple synchronous RAM model for testbench
-// Supports byte/half/word access with byte enables.
-// Memory contents loadable from binary file via DPI.
+// Uses verilator public_flat to expose memory array to C++ for DPI access.
 
 module tb_memory #(
     parameter int DATA_WIDTH = 16,
@@ -24,8 +23,8 @@ module tb_memory #(
 
     localparam int BUS_BYTES = DATA_WIDTH / 8;
 
-    // Byte-addressable memory
-    logic [7:0] mem [MEM_SIZE];
+    // Byte-addressable memory — public_flat for C++ access
+    logic [7:0] mem [MEM_SIZE] /* verilator public_flat_rw */;
 
     // Ready one cycle after AS asserted
     always_ff @(posedge clk or negedge rst_n) begin
@@ -56,7 +55,7 @@ module tb_memory #(
         if (!bus_wr_n && !bus_as_n) begin
             for (int i = 0; i < BUS_BYTES; i++) begin
                 if (bus_be[i])
-                    mem[ADDR_BITS'(masked_addr + ADDR_BITS'(i))] <= bus_wdata[i*8 +: 8];
+                    mem[ADDR_BITS'(masked_addr + ADDR_BITS'(i))] = bus_wdata[i*8 +: 8];
             end
         end
     end
