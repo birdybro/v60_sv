@@ -2806,6 +2806,228 @@ def build_phase11_test():
     print(f"    Test 11 (CVT.SW):  R17=8")
 
 
+def build_phase14_test():
+    """Phase 14: Full system validation — cross-phase integration tests.
+    Exercises realistic instruction sequences combining all implemented features."""
+    import struct as st
+
+    a = V60Asm()
+
+    # Data area at offset 0x300 (absolute addr 0x1300 when loaded at 0x1000)
+    DATA_BASE = 0x1300
+
+    # =====================================================================
+    # Test 1: Array sum loop — MOV, ADD, CMP, Bcc, memory access
+    # Sum of array [10, 20, 30, 40, 50] = 150
+    # =====================================================================
+    a.mov_imm_reg('w', DATA_BASE, 0)        # R0 = array base pointer
+    a.mov_imm_reg('w', 0, 1)                # R1 = accumulator = 0
+    a.mov_imm_reg('w', 5, 2)                # R2 = counter = 5
+    # loop_start (offset = current pos, we'll compute branch displacements)
+    # MOV.W [R0]+, R3 — load next element, advance pointer
+    loop1_top = len(a.code)
+    a.mov_mem_autoinc_reg('w', 0, 3)        # R3 = *R0++  (3 bytes)
+    a.add_reg_reg('w', 3, 1)                # R1 += R3    (3 bytes)
+    a.dec_reg('w', 2)                        # R2--        (2 bytes)
+    # BNE back to loop_start: disp = loop1_top - current_pos
+    branch1_pos = len(a.code)
+    disp1 = loop1_top - branch1_pos
+    a.bcc_short(a.BNE, disp1 & 0xFF)        # BNE loop    (2 bytes)
+    # R1 should be 150 (0x96)
+
+    # =====================================================================
+    # Test 2: BSR/RSR subroutine call — multiply R4*R5 via repeated addition
+    # R4=7, R5=6 → R6 = 42
+    # =====================================================================
+    a.mov_imm_reg('w', 7, 4)                # R4 = multiplicand
+    a.mov_imm_reg('w', 6, 5)                # R5 = multiplier (counter)
+    # BSR to multiply subroutine (need to know offset)
+    bsr2_pos = len(a.code)
+    a.bsr(0)  # placeholder, we'll patch
+    # After return, R6 = result
+    after_bsr2 = len(a.code)
+    # Jump past the subroutine
+    jmp_past_sub = len(a.code)
+    a.br_long(0)  # placeholder
+    after_jmp_past = len(a.code)
+
+    # --- Subroutine: multiply by repeated addition ---
+    # Input: R4=multiplicand, R5=multiplier
+    # Output: R6=product
+    sub_multiply = len(a.code)
+    a.mov_imm_reg('w', 0, 6)                # R6 = 0
+    sub_loop = len(a.code)
+    a.add_reg_reg('w', 4, 6)                # R6 += R4   (3 bytes)
+    a.dec_reg('w', 5)                        # R5--       (2 bytes)
+    sub_branch_pos = len(a.code)
+    sub_disp = sub_loop - sub_branch_pos
+    a.bcc_short(a.BNE, sub_disp & 0xFF)     # BNE loop   (2 bytes)
+    a.rsr()                                  # return     (1 byte)
+
+    # Patch BSR displacement
+    bsr_target_disp = sub_multiply - bsr2_pos
+    a.code[bsr2_pos+1] = bsr_target_disp & 0xFF
+    a.code[bsr2_pos+2] = (bsr_target_disp >> 8) & 0xFF
+
+    # Patch BR past subroutine
+    after_sub = len(a.code)
+    jmp_disp = after_sub - jmp_past_sub
+    a.code[jmp_past_sub+1] = jmp_disp & 0xFF
+    a.code[jmp_past_sub+2] = (jmp_disp >> 8) & 0xFF
+
+    # =====================================================================
+    # Test 3: PREPARE/DISPOSE frame + local variable access via FP
+    # Create stack frame, store value in local, read it back
+    # =====================================================================
+    a.mov_imm_reg('w', DATA_BASE + 0x80, 31)  # SP = data area + 0x80
+    a.prepare_imm(8)                            # PREPARE #8 (8-byte frame)
+    # FP now points to saved FP; locals at negative offsets from FP
+    # Store 0xDEAD into local at [FP - 4]
+    a.mov_imm_reg('w', 0xDEAD, 7)
+    a.mov_reg_mem_disp8('w', 7, 30, (-4) & 0xFF)  # MOV.W R7, -4[FP]
+    a.mov_imm_reg('w', 0, 7)                       # R7 = 0 (clear)
+    a.mov_mem_disp8_reg('w', 30, (-4) & 0xFF, 7)   # MOV.W -4[FP], R7 → R7 = 0xDEAD
+    a.dispose()                                      # DISPOSE
+
+    # =====================================================================
+    # Test 4: Shift chain + bit ops — compute hash-like value
+    # R8 = 0xA5, shift left 4, XOR with 0x3C, rotate right 2, test bit 5
+    # =====================================================================
+    a.mov_imm_reg('w', 0xA5, 8)
+    a.shl_imm_reg('w', 4, 8)                # R8 = 0xA50
+    a.xor_imm_reg('w', 0x3C, 8)             # R8 = 0xA50 ^ 0x3C = 0xA6C
+    a.rot_imm_reg('w', (-2) & 0xFF, 8)      # ROT right 2: 0xA6C >> 2 with wrap
+    a.test1_imm_reg(5, 8)                    # TEST bit 5
+
+    # =====================================================================
+    # Test 5: Cross-size operations chain
+    # R9.B = 0x80 (signed -128), sign-extend to word, negate, truncate back
+    # =====================================================================
+    a.mov_imm_reg('b', 0x80, 9)             # R9 = 0x80 (byte)
+    a.movsbw_reg_reg(9, 10)                  # R10 = sign-extend byte → 0xFFFFFF80
+    a.neg_reg_reg('w', 10, 11)               # R11 = -R10 = 0x80 (128)
+    a.movtwb_reg_reg(11, 12)                 # R12 = truncate word→byte = 0x80
+
+    # =====================================================================
+    # Test 6: DBNE loop with memory store — fill array with indices
+    # Write [0, 1, 2, 3, 4] to DATA_BASE+0x20
+    # =====================================================================
+    a.mov_imm_reg('w', DATA_BASE + 0x20, 13)  # R13 = dest ptr
+    a.mov_imm_reg('w', 0, 14)                  # R14 = index = 0
+    a.mov_imm_reg('w', 5, 15)                  # R15 = counter = 5
+    fill_loop = len(a.code)
+    a.mov_reg_mem_rind('w', 14, 13)             # MOV.W R14, [R13]  (3 bytes)
+    a.add_imm_reg('w', 4, 13)                   # R13 += 4          (7 bytes)
+    a.add_imm_reg('w', 1, 14)                   # R14 += 1          (7 bytes)
+    fill_branch = len(a.code)
+    fill_disp = fill_loop - fill_branch
+    a.dbne(15, fill_disp & 0xFFFF)              # DBNE R15, loop    (4 bytes)
+    # R13 = DATA_BASE+0x34, R14 = 5, R15 = 0
+
+    # Read back element [2] to verify
+    a.mov_imm_reg('w', DATA_BASE + 0x20, 16)
+    a.mov_mem_disp8_reg('w', 16, 8, 17)         # MOV.W 8[R16], R17 → element [2] = 2
+
+    # =====================================================================
+    # Test 7: PUSH/POP + PUSHM/POPM — save/restore context
+    # =====================================================================
+    a.mov_imm_reg('w', DATA_BASE + 0xC0, 31)  # Reset SP
+    a.mov_imm_reg('w', 0xAAAA, 18)
+    a.mov_imm_reg('w', 0xBBBB, 19)
+    a.push_reg(18)                              # push R18
+    a.push_reg(19)                              # push R19
+    a.mov_imm_reg('w', 0, 18)                  # clobber R18
+    a.mov_imm_reg('w', 0, 19)                  # clobber R19
+    a.pop_reg(19)                               # pop → R19 = 0xBBBB
+    a.pop_reg(18)                               # pop → R18 = 0xAAAA
+
+    # =====================================================================
+    # Test 8: MUL + DIV + REM chain — compute (17 * 13) / 5 and remainder
+    # 17*13=221, 221/5=44, 221%5=1
+    # =====================================================================
+    a.mov_imm_reg('w', 17, 20)
+    a.mul_imm_reg('w', 13, 20)                 # R20 = 221
+    a.mov_reg_reg('w', 20, 21)                 # R21 = 221
+    a.div_imm_reg('w', 5, 20)                  # R20 = 221/5 = 44
+    a.rem_imm_reg('w', 5, 21)                  # R21 = 221%5 = 1
+
+    # =====================================================================
+    # Test 9: Floating point — distance formula sqrt(3^2 + 4^2) = 5.0
+    # We can't do sqrt, but compute 3^2 + 4^2 = 25.0 as float
+    # =====================================================================
+    def f2u(f):
+        return st.unpack('<I', st.pack('<f', f))[0]
+
+    a.mov_imm_reg('w', f2u(3.0), 22)
+    a.mulf_reg_reg(22, 22)                     # R22 = 3.0 * 3.0 = 9.0
+    a.mov_imm_reg('w', f2u(4.0), 23)
+    a.mulf_reg_reg(23, 23)                     # R23 = 4.0 * 4.0 = 16.0
+    a.addf_reg_reg(22, 23)                     # R23 = 9.0 + 16.0 = 25.0
+
+    # =====================================================================
+    # Test 10: SETF + conditional logic — max(R24, R25)
+    # R24=42, R25=99. CMP R24,R25; SETF BGT → R26=0 (since 99 > 42 is false when testing R25-R24)
+    # Actually: CMP R24, R25 computes R25 - R24 = 99-42=57 > 0, so BGT=1
+    # =====================================================================
+    a.mov_imm_reg('w', 42, 24)
+    a.mov_imm_reg('w', 99, 25)
+    a.cmp_reg_reg('w', 24, 25)                # R25 - R24 = 57 → S=0,Z=0,OV=0
+    a.setf_immq_reg(a.BGT, 26)                # SETF BGT, R26 → R26=1 (57>0)
+    # Use SETF result to pick max: if BGT, max=R25, else max=R24
+    # We'll just leave the SETF result as the test output
+
+    # =====================================================================
+    # Test 11: ADDC chain — 64-bit addition via 32-bit halves
+    # 0x00000001_FFFFFFFF + 0x00000000_00000002 = 0x00000002_00000001
+    # Low: 0xFFFFFFFF + 2 = 0x00000001 + carry
+    # High: 1 + 0 + carry = 2
+    # =====================================================================
+    a.mov_imm_reg('w', 0xFFFFFFFF, 27)       # R27 = low1
+    a.mov_imm_reg('w', 1, 28)                 # R28 = high1
+    a.add_imm_reg('w', 2, 27)                 # R27 = low1+2 = 0x00000001, CY=1
+    a.addc_imm_reg('w', 0, 28)                # R28 = high1+0+CY = 2
+
+    a.halt()
+
+    # =====================================================================
+    # Data section — pad to DATA_BASE offset (0x300 from code start)
+    # =====================================================================
+    code_len = len(a.code)
+    pad_needed = 0x300 - code_len
+    if pad_needed > 0:
+        for _ in range(pad_needed):
+            a.data_byte(0xCD)  # NOP padding
+    elif pad_needed < 0:
+        print(f"WARNING: code ({code_len} bytes) overflows into data area at 0x300!")
+
+    # Array for Test 1: [10, 20, 30, 40, 50] at DATA_BASE+0x00
+    for val in [10, 20, 30, 40, 50]:
+        a.data_dword(val)
+
+    # Test 6 fill area at DATA_BASE+0x20 — pre-fill with 0xFF
+    while len(a.code) < 0x300 + 0x20:
+        a.data_byte(0xFF)
+    for _ in range(20):  # 5 words
+        a.data_byte(0xFF)
+
+    a.write('tests/phase14_test.bin')
+
+    print("\nPhase 14 test: Full system validation")
+    print(f"  Binary size: {len(a.code)} bytes")
+    print("  Test cases:")
+    print("    1: Array sum loop        → R1 = 150 (0x96)")
+    print("    2: BSR/RSR subroutine    → R6 = 42")
+    print("    3: PREPARE/DISPOSE frame → R7 = 0xDEAD")
+    print("    4: Shift/XOR/ROT chain   → R8 = rotated value")
+    print("    5: Cross-size chain       → R10=0xFFFFFF80, R11=0x80, R12=0x80")
+    print("    6: DBNE fill + readback  → R14=5, R15=0, R17=2")
+    print("    7: PUSH/POP restore      → R18=0xAAAA, R19=0xBBBB")
+    print("    8: MUL/DIV/REM chain     → R20=44, R21=1")
+    print(f"    9: FP 3²+4²             → R23=0x{f2u(25.0):08X}")
+    print("   10: SETF conditional      → R26=1")
+    print("   11: 64-bit ADDC           → R27=1, R28=2")
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'phase3':
         build_phase3_test()
@@ -2831,5 +3053,7 @@ if __name__ == '__main__':
         build_phase11_test()
     elif len(sys.argv) > 1 and sys.argv[1] == 'phase12':
         build_phase12_test()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'phase14':
+        build_phase14_test()
     else:
         build_phase2_test()

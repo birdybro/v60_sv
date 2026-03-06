@@ -127,4 +127,4 @@ DPI-exported functions (`get_pc`, `get_psw`, `get_gpr`, `mem_write_byte`, etc.) 
 - **Phase 10** ✅ — Decrement-and-branch (DBCC 15 variants, TB)
 - **Phase 11** ✅ — Floating point (11 FP ops via DPI-C FPU)
 - **Phase 12** ✅ — String/bitfield/decimal operations (via DPI-C)
-- **Phase 14** — Full system validation
+- **Phase 14** ✅ — Full system validation (cross-phase integration tests, 115 steps)

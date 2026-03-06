@@ -93,9 +93,9 @@ RESET → RESET_VEC → FETCH → DECODE → EXECUTE → WRITEBACK → FETCH
 | 10 - Dec-and-branch | Done | DBCC (15 variants), TB | 42/42 steps |
 | 11 - Floating point | Done | CMPF, MOVF, NEGF, ABSF, SCLF, ADDF, SUBF, MULF, DIVF, CVT.WS, CVT.SW | 25/25 steps |
 | 12 - String/bitfield/decimal | Done | String ops, EXTBFZ/EXTBFS/INSBFR/INSBFL, BCD (via DPI-C) | 23/23 steps |
-| 14 - Full validation | Planned | System-level integration tests | |
+| 14 - Full validation | Done | Cross-phase integration: loops, subroutines, frames, FP, DBNE, ADDC chains | 115/115 steps |
 
-**Total verified: 442 instruction steps matching MAME**
+**Total verified: 557 instruction steps matching MAME**
 
 ## Validation Approach
 
