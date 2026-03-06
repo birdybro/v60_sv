@@ -38,7 +38,7 @@ Optional flags: `-vcd out.vcd` for waveform output.
 |-----------|----------|
 | `rtl/` | SystemVerilog RTL source (v60_cpu.sv top-level, v60_pkg.sv shared types) |
 | `tb/` | Verilator testbench (tb_v60_top.sv, tb_memory.sv) |
-| `sim/` | C++ simulation driver, trace comparison tool |
+| `sim/` | C++ simulation driver, DPI-C modules (FPU, string/bitfield), trace comparison tool |
 | `mame/` | MAME reference harness (compiles real MAME V60 source unmodified) |
 | `tests/` | V60 assembler (asm_v60.py) and generated test binaries |
 | `docs/` | NEC V60 Programmer's Reference Manual |
@@ -89,14 +89,13 @@ RESET → RESET_VEC → FETCH → DECODE → EXECUTE → WRITEBACK → FETCH
 | 6 - Control flow | Done | JMP, JSR, BSR, RET, PREPARE/DISPOSE, PUSH/POP, PUSHM/POPM | 47/47 steps |
 | 7 - Multiply/shift/bit | Done | MUL/MULU, DIV/DIVU, REM/REMU, SHL, SHA, ROT, ROTC, SET1/CLR1/NOT1/TEST1 | 73/73 steps |
 | 8 - System/utility | Done | Cross-size MOV, MOVEA, RVBIT/RVBYT, SETF, UPDPSW, LDPR/STPR, TASI | 54/54 steps |
-| 9 - Interrupts | Planned | Interrupt/exception handling | |
-| 10 - Dec-and-branch | Planned | DBGT, DBLE, etc. | |
-| 11 - Floating point | Planned | FPU operations | |
-| 12 - String ops | Planned | Block move/compare/search | |
-| 13 - Bitfield/decimal | Planned | Bitfield extract/insert, BCD | |
+| 9 - Interrupts | Done | TRAP, BRKV, BRK, RSR, RETIU/RETIS | 33/33 steps |
+| 10 - Dec-and-branch | Done | DBCC (15 variants), TB | 42/42 steps |
+| 11 - Floating point | Done | CMPF, MOVF, NEGF, ABSF, SCLF, ADDF, SUBF, MULF, DIVF, CVT.WS, CVT.SW | 25/25 steps |
+| 12 - String/bitfield/decimal | Done | String ops, EXTBFZ/EXTBFS/INSBFR/INSBFL, BCD (via DPI-C) | 23/23 steps |
 | 14 - Full validation | Planned | System-level integration tests | |
 
-**Total verified: 319 instruction steps matching MAME**
+**Total verified: 442 instruction steps matching MAME**
 
 ## Validation Approach
 

@@ -27,6 +27,8 @@ Reference documentation: `docs/NEC_V60_Programmers_Reference_Manual.pdf`
   - `tb_memory.sv` — Simple byte-addressable RAM model
 - **sim/** — Simulation drivers and tools
   - `sim_main.cpp` — Verilator C++ driver with CSV trace and VCD output
+  - `v60_fp.cpp` — DPI-C IEEE 754 FPU (MAME-matching single-precision math)
+  - `v60_string.cpp` — DPI-C string/bitfield/decimal ops with shadow memory
   - `trace_compare.py` — Python script to diff MAME vs RTL traces
   - `Makefile` — Verilator build
 - **mame/** — MAME reference harness (compiles real MAME V60 source unmodified)
@@ -92,6 +94,7 @@ DECODE → HALT (if HALT opcode)
 EXECUTE → MEM_READ → MEM_READ_WAIT → EXECUTE2 → [MEM_WRITE → MEM_WRITE_WAIT →] WRITEBACK
 EXECUTE → MEM_WRITE → MEM_WRITE_WAIT → WRITEBACK (MOV to memory, write-only)
 Indirect modes: EXECUTE2(indirect_active) → MEM_READ/MEM_WRITE (loop back for data access)
+String/bitfield/decimal (FMT_VII): EXECUTE → STRING_LOOP (register writebacks) → WRITEBACK
 ```
 
 ### Key V60 ISA Facts
@@ -120,9 +123,8 @@ DPI-exported functions (`get_pc`, `get_psw`, `get_gpr`, `mem_write_byte`, etc.) 
 - **Phase 6** ✅ — Control flow (JMP, JSR, BSR, RET, PREPARE/DISPOSE, PUSH/POP, PUSHM/POPM)
 - **Phase 7** ✅ — Multiply, divide, shifts, rotates, bit ops (MUL/MULU, DIV/DIVU, REM/REMU, SHL, SHA, ROT, ROTC, SET1/CLR1/NOT1/TEST1)
 - **Phase 8** ✅ — System/utility instructions (cross-size MOV, MOVEA, RVBIT/RVBYT, SETF, UPDPSW, LDPR/STPR, TASI)
-- **Phase 9** — Interrupts & exceptions
-- **Phase 10** — Decrement-and-branch
-- **Phase 11** — Floating point
-- **Phase 12** — String operations
-- **Phase 13** — Bitfield & decimal
+- **Phase 9** ✅ — Interrupts & exceptions (TRAP, BRKV, BRK, RSR, RETIU/RETIS)
+- **Phase 10** ✅ — Decrement-and-branch (DBCC 15 variants, TB)
+- **Phase 11** ✅ — Floating point (11 FP ops via DPI-C FPU)
+- **Phase 12** ✅ — String/bitfield/decimal operations (via DPI-C)
 - **Phase 14** — Full system validation
