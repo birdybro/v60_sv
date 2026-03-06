@@ -121,7 +121,10 @@ module v60_control
     logic [31:0] fp_src_val;       // AM1 value (saved across phases)
     logic [31:0] temp_addr2;       // AM2 effective address
 
-    // String/bitfield/decimal DPI-C interface
+    // String/bitfield/decimal DPI-C interface (simulation only — not synthesizable)
+    // A synthesis replacement would require a multi-cycle micro-FSM with bus access
+    // to decode Format VII addressing modes and iterate over string/bitfield data.
+    // verilator lint_off IMPERFECTSCH
     import "DPI-C" function void v60_string_exec(
         input int pc, input int psw,
         output int inst_len, output int new_psw,
@@ -130,6 +133,7 @@ module v60_control
         output int wr1_idx, output int wr1_val,
         output int wr2_idx, output int wr2_val
     );
+    // verilator lint_on IMPERFECTSCH
 
     // String operation result registers
     logic [5:0]  str_inst_len;
